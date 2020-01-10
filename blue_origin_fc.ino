@@ -11,33 +11,84 @@
 // Stop Bits: 1 |
 // 
 // Packets are ASCII string of 21 comma-separated values
-// size of packets <= 250 bytes (buffer is 256 bytes), individual fields will never exceed 20 bytes
-// Data stream starts approximately one minute after nano-labs are powered up
+// size of packets <= 250 bytes (buffer is 256 bytes), 
+// individual fields will never exceed 20 bytes Data
+// stream starts approximately one minute after nano-labs are powered up
 
-#include "blue_origin_fc.h"
-#include <SPI.h>
-#include <SD.h>
-//#include <TimerOne.h>
+#include <SPI.h>  // needed for SD library
+#include <SD.h>   // exposes functions for writing to/reading from SD card
 
+// pin configuration macros
+#define CHIP_SELECT 10
+#define TEMP_ANALOG_PIN A0
+#define CURR_ANALOG_PIN A1
+#define VOLT_ANALOG_PIN A2
+
+#define PUMP_POWER 4
+#define PUMP_1 5
+#define PUMP_2 6
+
+#define EXPERIMENT 9
+
+// data packet information
+#define MAX_FRAME_SIZE 250
+#define MAX_FIELD_SIZE 20
+
+// possible states for our cubesat
+#define LS_NO_STATE 0
+#define LS_IDLE 1
+#define LS_SERIAL_READ 2
+#define LS_PUMP_FILL 3
+#define LS_PUMP_EMPTY 4
+#define LS_CELL_PLATING 5
+#define LS_LOGGING 6
+
+// file names for logging, keeping track of state, etc.
+#define LOG_FILE "log.txt"
+#define STATE_FILE "state.txt"
+#define DATA_FILE "data.csv"
+
+// possible states for the blue rocket
+#define BS_NO_STATE "@"
+#define BS_ABORT_ENABLED "A"
+#define BS_ABORT_COMMANDED "B"
+#define BS_LIFTOFF "C"
+#define BS_MECO "D"
+#define BS_SEP_COMMANDED "E"
+#define BS_COAST_START "F"
+#define BS_APOGEE "G"
+#define BS_COAST_END "H"
+#define BS_DROGUE_DEPLOY "I"
+#define BS_MAIN_CHUTE_DEPLOY "J"
+#define BS_LANDING "K"
+#define BS_SAFING "L"
+#define BS_MISSION_END "M"
+
+// globals to help determine what to do when
+// during various states
 int lab_state;
 String blue_state;
 int last_lab_state;
 float last_blue_time = 0;
 
+// counter that indicates log time
 unsigned long last_log_time = 0;
 
+// counter that indicates how long pumps have been live
 unsigned long pump_start_time = 0;
 
+// are the pumps on? (maybe just use pump
 bool pump_on = false;
 
+// have we started plating
 bool plating_started = false;
 
+// 
 bool pump_fill = true;
 
 bool pump_empty = true;
 
-bool on_pad = true;
-
+// for debugging
 const bool DEBUG = true;
 
 void setup() {
@@ -94,15 +145,15 @@ void loop() {
           break;
         }
         if (blue_state.equals(BS_NO_STATE)) {
-          if () {
+          if (true) {
             last_lab_state = LS_IDLE;
             lab_state = LS_PUMP_FILL;
             pump_fill = false;
             break; 
           }
         }
-        if (blue_state.equals(BS_LANDING) {
-          if (pump_empty
+        if (blue_state.equals(BS_LANDING)) {
+          if (pump_empty) {}
         }
         last_lab_state = LS_IDLE;
         lab_state = LS_IDLE;
