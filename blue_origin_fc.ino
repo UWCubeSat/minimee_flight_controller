@@ -92,21 +92,8 @@ int last_lab_state;
 // last MET received from rocket
 float last_blue_time = 0;
 
-// counter that indicates log time
-unsigned long last_log_time = 0;
-
-// counter that indicates how long pumps have been live
-unsigned long pump_start_time = 0;
-
-// are the pumps on? (maybe just use pump
-bool pump_on = false;
-
-// have we started plating
-bool plating_started = false;
-
-bool pump_fill = true;
-
-bool pump_empty = true;
+// has the experiment been primed?
+bool experiment_primed = false;
 
 // for debugging
 const bool DEBUG = true;
@@ -120,7 +107,12 @@ void setup() {
   // initialize SD interface
   sd_init();
 
-  // determine if we need to read last state
+//  // determine if we need to read last state
+//  if (SD.exists(STATE_FILE)) {
+//    // restore the previous state, and go from there
+//  } else {
+//    // configure default state
+//  }
   
   // configure pins
   pin_init();
@@ -170,12 +162,9 @@ void loop() {
           break;
         }
         if (blue_state.equals(BS_NO_STATE)) {
-          if (true) {
-            last_lab_state = LS_IDLE;
-            lab_state = LS_PUMP_FILL;
-            pump_fill = false;
-            break; 
-          }
+          // is it time for us to start priming the experiment?
+          // if not, that me
+          if (!experiment_primed)
         }
         if (blue_state.equals(BS_LANDING)) {
           if (pump_empty) {}
