@@ -15,7 +15,6 @@
 // individual fields will never exceed 20 bytes Data
 // stream starts approximately one minute after nano-labs are powered up
 
-#include <SPI.h>  // needed for SD library
 #include <SD.h>   // exposes functions for writing to/reading from SD card
 
 // pin configuration macros
@@ -64,11 +63,33 @@
 #define BS_SAFING "L"
 #define BS_MISSION_END "M"
 
-// globals to help determine what to do when
-// during various states
+// function prototypes
+
+// intializes serial interface
+void serial_init();
+
+// initializes SD card interface
+void sd_init();
+
+// configures pins on which pumps, 
+// the experiment and the sensors are driven
+void pin_init();
+
+// end function prototypes
+
+
+// global variables
+
+// the current state the lab is in
 int lab_state;
+
+// the last seen state of the rocket
 String blue_state;
+
+// the previous state the lab was in
 int last_lab_state;
+
+// last MET received from rocket
 float last_blue_time = 0;
 
 // counter that indicates log time
@@ -83,7 +104,6 @@ bool pump_on = false;
 // have we started plating
 bool plating_started = false;
 
-// 
 bool pump_fill = true;
 
 bool pump_empty = true;
@@ -91,31 +111,36 @@ bool pump_empty = true;
 // for debugging
 const bool DEBUG = true;
 
+// end global variables
+
 void setup() {
   // initialize serial interface
+  serial_init();
+
+  // initialize SD interface
+  sd_init();
+
+  // determine if we need to read last state
+  
+  // configure pins
+  pin_init();
+}
+
+void serial_init() {
   Serial.begin(115200, SERIAL_8N1);
   while (!Serial);
+  Serial.println("Serial initialized");
+}
 
-  File lf;
+void sd_init() {
   if (!SD.begin(CHIP_SELECT)) {
-    log_event("SD failed to initialize", lf);
+    Serial.println("SD failed to initialize");  
   } else {
-    lf = SD.open(LOG_FILE, FILE_WRITE);
-    log_event("SD initialized", lf);
+    Serial.println("SD initialized");
   }
-  log_event("Serial initialized.", lf);
-  
-  // determine if we need to read last state
-  if (SD.exists(STATE_FILE)) {
-    log_event("State file found, reloading state.", lf);
-    //restore_state();
-  } else {
-    log_event("No state file found.", lf);
-    lab_state = LS_IDLE;
-    blue_state = BS_NO_STATE;
-  }
+}
 
-  // configure pins
+void config_pins() {
   pinMode(PUMP_POWER, OUTPUT);
   pinMode(PUMP_1, OUTPUT);
   pinMode(PUMP_2, OUTPUT);
