@@ -63,6 +63,26 @@
 #define BS_SAFING "L"
 #define BS_MISSION_END "M"
 
+
+// typedefs
+
+// encapsulates environment data
+typedef struct env_data_st {
+  float volt;
+  float curr;
+  float temperature;
+} EnvData, *EnvDataPtr;
+
+// encapsulates state information
+typedef struct state_st {
+  uint8_t lab_state;
+  uint8_t blue_state;
+  state_st last_state;
+} State;
+
+// end typedefs
+
+
 // function prototypes
 
 // intializes serial interface
@@ -75,8 +95,16 @@ void sd_init();
 // the experiment and the sensors are driven
 void pin_init();
 
-// end function prototypes
+// takes current, voltage, and temperature
+// measurements and stores them in EnvData
+void read_sensors(EnvDataPtr env_data);
 
+// returns a time stamp formatted MM:SS:MSMS
+String get_time_stamp();
+
+
+
+// end function prototypes
 
 // global variables
 
@@ -100,6 +128,9 @@ const bool DEBUG = true;
 
 // end global variables
 
+
+// configures and initializes serial, sd,
+// pump, and experiment interface
 void setup() {
   // initialize serial interface
   serial_init();
@@ -137,7 +168,11 @@ void config_pins() {
   pinMode(PUMP_1, OUTPUT);
   pinMode(PUMP_2, OUTPUT);
   pinMode(EXPERIMENT, OUTPUT);
-  digitalWrite(PUMP_POWER, LOW);
+
+  // pins for sensor reading
+  pinMode(TEMP_ANALOG_PIN, INPUT);
+  pinMode(CURR_ANALOG_PIN, INPUT);
+  pinMode(VOLT_ANALOG_PIN, INPUT);
 }
 
 void loop() {
@@ -164,7 +199,9 @@ void loop() {
         if (blue_state.equals(BS_NO_STATE)) {
           // is it time for us to start priming the experiment?
           // if not, that me
-          if (!experiment_primed)
+          if (!experiment_primed) {
+            // enter priming state
+          }
         }
         if (blue_state.equals(BS_LANDING)) {
           if (pump_empty) {}
@@ -264,15 +301,12 @@ void loop() {
       break;
       
     case LS_LOGGING:
-      {
-        File lf = SD.open(LOG_FILE, FILE_WRITE);
+      { 
         float curr_val = analogRead(CURR_ANALOG_PIN) * (5.0 / 1023.0);
         float volt_val = 5.0 - analogRead(VOLT_ANALOG_PIN) * (5.0 / 1023.0);
         float temp_val = analogRead(TEMP_ANALOG_PIN) * (5.0 / 1023.0) * 0.01;
-        write_data_to_csv(volt_val, curr_val, temp_val);
-        save_state();
+        
         log_event("Blue is in state: " + blue_state + " after " + String(last_blue_time) + " seconds.", lf);
-        lf.close();
         lab_state = last_lab_state;
         last_lab_state = LS_LOGGING;
       }
@@ -287,37 +321,6 @@ void loop() {
       }
       break;
   }
-}
-
-void log_event(String message, File f) {
-  if (DEBUG) {
-    Serial.println(get_time_stamp() + " " + message);
-  } else {
-    f.println(get_time_stamp() + " " + message);
-  }
-}
-
-void write_data_to_csv(float volt, float curr, float temp) {
-  File df = SD.open(DATA_FILE, FILE_WRITE);
-  if (DEBUG) {
-    Serial.println(get_time_stamp() + "," + String(volt) + "," + String(curr) + "," + String(temp));
-  } else {
-    df.println(get_time_stamp() + "," + String(volt) + "," + String(curr) + "," + String(temp));
-  }
-  df.close();
-}
-
-void save_state() {
-  if (SD.exists(STATE_FILE)) {
-    SD.remove(STATE_FILE);
-  }
-  File sf = SD.open(STATE_FILE, FILE_WRITE);
-  if (DEBUG) {
-    Serial.println(get_time_stamp() + "," + lab_state + "," + blue_state);
-  } else {
-    sf.println(get_time_stamp() + "," + lab_state + "," + blue_state);
-  }
-  sf.close();
 }
 
 String get_time_stamp() {
