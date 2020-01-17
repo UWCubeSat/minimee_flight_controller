@@ -77,7 +77,8 @@ typedef struct env_data_st {
 typedef struct state_st {
   uint8_t lab_state;
   uint8_t blue_state;
-  state_st last_state;
+  uint8_t last_state;
+  
 } State;
 
 // end typedefs
