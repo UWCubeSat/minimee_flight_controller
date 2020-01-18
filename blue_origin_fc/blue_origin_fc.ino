@@ -36,11 +36,9 @@
 // possible states for our cubesat
 #define LS_NO_STATE 0
 #define LS_IDLE 1
-#define LS_SERIAL_READ 2
-#define LS_PRIME_EXPERIMENT 3
-#define LS_CELL_PLATING 4
-#define LS_CLEAN_CELL 5
-#define LS_LOG 6
+#define LS_PRIME_EXPERIMENT 2
+#define LS_CELL_PLATING 3
+#define LS_CLEAN_CELL 4
 
 // file names for logging, keeping track of state, etc.
 #define LOG_FILE "log.txt"
@@ -48,20 +46,20 @@
 #define DATA_FILE "data.csv"
 
 // possible states for the blue rocket
-#define BS_NO_STATE "@"
-#define BS_ABORT_ENABLED "A"
-#define BS_ABORT_COMMANDED "B"
-#define BS_LIFTOFF "C"
-#define BS_MECO "D"
-#define BS_SEP_COMMANDED "E"
-#define BS_COAST_START "F"
-#define BS_APOGEE "G"
-#define BS_COAST_END "H"
-#define BS_DROGUE_DEPLOY "I"
-#define BS_MAIN_CHUTE_DEPLOY "J"
-#define BS_LANDING "K"
-#define BS_SAFING "L"
-#define BS_MISSION_END "M"
+#define BS_NO_STATE '@'
+#define BS_ABORT_ENABLED 'A'
+#define BS_ABORT_COMMANDED 'B'
+#define BS_LIFTOFF 'C'
+#define BS_MECO 'D'
+#define BS_SEP_COMMANDED 'E'
+#define BS_COAST_START 'F'
+#define BS_APOGEE 'G'
+#define BS_COAST_END 'H'
+#define BS_DROGUE_DEPLOY 'I'
+#define BS_MAIN_CHUTE_DEPLOY 'J'
+#define BS_LANDING 'K'
+#define BS_SAFING 'L'
+#define BS_MISSION_END 'M'
 
 
 // typedefs
@@ -75,10 +73,10 @@ typedef struct env_data_st {
 
 // encapsulates state information
 typedef struct state_st {
-  uint8_t lab_state;
-  uint8_t blue_state;
-  uint8_t last_state;
-  
+  float last_blue_time;
+  char lab_state;
+  char blue_state;
+  char last_state;
 } State;
 
 // end typedefs
@@ -97,29 +95,20 @@ void sd_init();
 void pin_init();
 
 // takes current, voltage, and temperature
-// measurements and stores them in EnvData
-void read_sensors(EnvDataPtr env_data);
+// measurements and stores them in the EnvData
+// struct at EnvDataPtr
+void read_sensors(EnvDataPtr env_data_ptr);
 
 // returns a time stamp formatted MM:SS:MSMS
 String get_time_stamp();
 
-
-
 // end function prototypes
+
 
 // global variables
 
-// the current state the lab is in
-int lab_state;
-
-// the last seen state of the rocket
-String blue_state;
-
-// the previous state the lab was in
-int last_lab_state;
-
-// last MET received from rocket
-float last_blue_time = 0;
+// stores state information
+State state;
 
 // has the experiment been primed?
 bool experiment_primed = false;
@@ -133,6 +122,17 @@ const bool DEBUG = true;
 // configures and initializes serial, sd,
 // pump, and experiment interface
 void setup() {
+  // we want to ensure that we can log what's
+  // happening with the cubesat. When we're
+  // debugging then, output is reflected to the serial line
+  // and thus we need it initialized first. 
+  if (DEBUG) {
+    serial_init();
+    sd_init();
+  } else {
+    sd_init();
+    serial_init();
+  }
   // initialize serial interface
   serial_init();
 
@@ -145,6 +145,12 @@ void setup() {
 //  } else {
 //    // configure default state
 //  }
+
+  // initialize state
+  state.last_blue_time = 0;
+  state.lab_state = LS_IDLE;
+  state.blue_state = '@';
+  state.last_state = LS_NO_STATE;
   
   // configure pins
   pin_init();
@@ -164,7 +170,8 @@ void sd_init() {
   }
 }
 
-void config_pins() {
+void pin_init() {
+  // these will probably be relegated to DEBUG situations only
   pinMode(PUMP_POWER, OUTPUT);
   pinMode(PUMP_1, OUTPUT);
   pinMode(PUMP_2, OUTPUT);
@@ -174,26 +181,28 @@ void config_pins() {
   pinMode(TEMP_ANALOG_PIN, INPUT);
   pinMode(CURR_ANALOG_PIN, INPUT);
   pinMode(VOLT_ANALOG_PIN, INPUT);
+
+  // indicates that pumps are powered
+  digitalWrite(PUMP_POWER, HIGH);
 }
 
 void loop() {
-  switch(lab_state) {
+  switch(state.lab_state) {
     case LS_IDLE:
       {     
         if (Serial.available() > 0) {
           read_serial_input();
         }
-      }
-      break;
-    case LS_SERIAL_READ:
-      {
         
       }
       break;
-      
     case LS_PRIME_EXPERIMENT:
       {
-
+        if (!experiment_primed) {
+          if (DEBUG) {
+            digitalWrite(
+          }
+        }
       }
       break;
       
@@ -208,9 +217,8 @@ void loop() {
         
       }
       break;
-      
-    case LS_LOG:
-      { 
+    case LS_NO_STATE:
+      {
         
       }
       break;
@@ -224,38 +232,34 @@ void loop() {
 
 void read_serial_input() {
   delay(20);
+  int bytes_read = 0;
+  // there are 21 fields to read
   for (int i = 0; i < 21; i++) {
     char buf[21];
     int bytes = 0;
     char next = Serial.read();
+
+    // each field is guaranteed to end in a comma
+    // and be no more than 20 bytes in length
     while (next > -1 && bytes < 21 && next != ',') {
       buf[bytes] = next;
       bytes++;
       next = Serial.read();
     }
-//          for (bytes = 0; bytes <= 21; bytes++) {
-//            if (Serial.peek() > -1) {
-//              char next = Serial.read();
-//              if (next == ',') {
-//                break;
-//              } else {
-//                buf[bytes] = next;
-//              }
-//            } else {
-//              break;
-//            }
-//          }
     buf[bytes] = '\0';
     if (i == 0) {
-      blue_state = buf;
+      state.blue_state = buf[0];
     }
     if (i == 1) {
-      last_blue_time = ((String)buf).toFloat();
+      state.last_blue_time = ((String)buf).toFloat();
     }
   }
-  lab_state = last_lab_state;
-  last_lab_state = LS_SERIAL_READ;
-  lf.close();
+}
+
+void read_sensors(EnvDataPtr env_data_ptr) {
+  env_data_ptr->volt = (float) analogRead(VOLT_ANALOG_PIN);
+  env_data_ptr->curr = (float) analogRead(CURR_ANALOG_PIN);
+  env_data_ptr->temp = (float) analogRead(TEMP_ANALOG_PIN);
 }
 
 String get_time_stamp() {
