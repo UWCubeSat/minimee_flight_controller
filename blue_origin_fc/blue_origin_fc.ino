@@ -29,9 +29,14 @@
 
 #define EXPERIMENT 9
 
+// how long (in ms) it takes to prime the experiment
+#define PRIME_TIME 180000
+
 // data packet information
 #define MAX_FRAME_SIZE 250
 #define MAX_FIELD_SIZE 20
+#define NUM_FIELDS 21
+#define DELIMITER ','
 
 // possible states for our cubesat
 #define LS_NO_STATE 0
@@ -66,9 +71,9 @@
 
 // encapsulates environment data
 typedef struct env_data_st {
-  float volt;
-  float curr;
-  float temperature;
+  float volt_data;
+  float curr_data;
+  float temp_data;
 } EnvData, *EnvDataPtr;
 
 // encapsulates state information
@@ -113,6 +118,8 @@ State state;
 // has the experiment been primed?
 bool experiment_primed = false;
 
+// has the experiment started?
+bool experiment_started = false;
 // for debugging
 const bool DEBUG = true;
 
@@ -133,24 +140,17 @@ void setup() {
     sd_init();
     serial_init();
   }
-  // initialize serial interface
-  serial_init();
 
-  // initialize SD interface
-  sd_init();
-
-//  // determine if we need to read last state
-//  if (SD.exists(STATE_FILE)) {
-//    // restore the previous state, and go from there
-//  } else {
-//    // configure default state
-//  }
-
-  // initialize state
-  state.last_blue_time = 0;
-  state.lab_state = LS_IDLE;
-  state.blue_state = '@';
-  state.last_state = LS_NO_STATE;
+  // determine if we need to read last state
+  if (SD.exists(STATE_FILE)) {
+    // restore_state();
+  } else {
+    // initialize default state
+    state.last_blue_time = 0L;
+    state.lab_state = LS_IDLE;
+    state.blue_state = '@';
+    state.last_state = LS_NO_STATE;
+  }
   
   // configure pins
   pin_init();
@@ -181,50 +181,113 @@ void pin_init() {
   pinMode(TEMP_ANALOG_PIN, INPUT);
   pinMode(CURR_ANALOG_PIN, INPUT);
   pinMode(VOLT_ANALOG_PIN, INPUT);
-
-  // indicates that pumps are powered
-  digitalWrite(PUMP_POWER, HIGH);
 }
 
+// main state machine logic
 void loop() {
   switch(state.lab_state) {
+    static bool priming_started;
+    static long pump_start_time;
+    static long last_log_time;
+    static File data_file;
+    static File log_file;
     case LS_IDLE:
       {     
         if (Serial.available() > 0) {
           read_serial_input();
         }
-        
+
+        // is it time to start priming?
+        // check both no state and primed, since blue may enter
+        // null state and we want to know if we've already
+        // prepared the cell
+        if (state.blue_state == BS_NO_STATE && !experiment_primed) {
+          priming_started = false;
+          state.lab_state = LS_PRIME_EXPERIMENT;
+          state.last_state = LS_IDLE;
+        }
+
+        // can we start the experiment?
+        if (state.blue_state == BS_COAST_START) {
+          plating_started = false;
+          state.lab_state = LS_CELL_PLATING;
+          state.last_state = LS_IDLE;
+        }
       }
       break;
     case LS_PRIME_EXPERIMENT:
       {
-        if (!experiment_primed) {
-          if (DEBUG) {
-            digitalWrite(
+        // check for available serial data
+        if (Serial.available() > 0) {
+          read_serial_input();
+        }
+
+        // is it time to start priming the experiment?
+        if (!priming_started) {
+          pump_start_time = millis();
+          priming_started = true;
+          if (DEBUG) {          
+            // indicates that pumps are powered
+            digitalWrite(PUMP_POWER, HIGH);
+            digitalWrite(PUMP_1, HIGH);
+          } else {
+            // real priming logic, not sure what this should be
           }
+        }
+
+        // if we've sufficiently primed the experiment,
+        // we can stop priming and prepare to idle until
+        // we start coasting
+        if (millis() - pump_start_time >= PRIME_TIME) {
+          // time to stop priming
+          experiment_primed = true;
+          if (DEBUG) {
+            // indicates that pumps are powered
+            digitalWrite(PUMP_POWER, LOW);
+            digitalWrite(PUMP_1, LOW);
+          } else {
+            // real clean up logic, not sure what this should be
+          }
+          state.lab_state = LS_IDLE;
+          state.last_state = LS_PRIME_EXPERIMENT;
         }
       }
       break;
       
     case LS_CELL_PLATING:
       {
+        if (Serial.available() > 0) {
+          read_serial_input();
+        }
+        if (!plating_started) {
+          plating_started = true;
+          digitalWrite(EXPERIMENT, HIGH);
+        }
         
       }
       break;
 
     case LS_CLEAN_CELL:
       {
-        
+        if (Serial.available() > 0) {
+          read_serial_input();
+        }       
       }
       break;
     case LS_NO_STATE:
       {
-        
+        if (Serial.available() > 0) {
+          read_serial_input();
+        }
+        // this is a null state and we should never be here      
       }
       break;
     default:
       {
-        
+        if (Serial.available() > 0) {
+          read_serial_input();
+        }
+        // this is a null state and we should never be here       
       }
       break;
   }
@@ -234,14 +297,16 @@ void read_serial_input() {
   delay(20);
   int bytes_read = 0;
   // there are 21 fields to read
-  for (int i = 0; i < 21; i++) {
+  for (int i = 0; i < NUM_FIELDS; i++) {
     char buf[21];
     int bytes = 0;
     char next = Serial.read();
 
     // each field is guaranteed to end in a comma
     // and be no more than 20 bytes in length
-    while (next > -1 && bytes < 21 && next != ',') {
+    while (next > -1 &&
+              bytes <= MAX_FIELD_SIZE &&
+              next != DELIMITER) {
       buf[bytes] = next;
       bytes++;
       next = Serial.read();
@@ -257,9 +322,9 @@ void read_serial_input() {
 }
 
 void read_sensors(EnvDataPtr env_data_ptr) {
-  env_data_ptr->volt = (float) analogRead(VOLT_ANALOG_PIN);
-  env_data_ptr->curr = (float) analogRead(CURR_ANALOG_PIN);
-  env_data_ptr->temp = (float) analogRead(TEMP_ANALOG_PIN);
+  env_data_ptr->volt_data = (float) analogRead(VOLT_ANALOG_PIN);
+  env_data_ptr->curr_data = (float) analogRead(CURR_ANALOG_PIN);
+  env_data_ptr->temp_data = (float) analogRead(TEMP_ANALOG_PIN);
 }
 
 String get_time_stamp() {
