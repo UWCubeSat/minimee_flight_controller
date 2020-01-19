@@ -126,6 +126,7 @@ bool experiment_primed = false;
 
 // has the experiment started?
 bool experiment_started = false;
+
 // for debugging
 const bool DEBUG = true;
 
@@ -206,9 +207,9 @@ void loop() {
         }
 
         // is it time to start priming?
-        // check both no state and primed, since blue may enter
-        // null state and we want to know if we've already
-        // prepared the cell
+        // check both no state and primed, since blue
+        // may enter null state unexpectedly and we
+        // want to know if we've already prepared the cell
         if (state.blue_state == BS_NO_STATE && !experiment_primed) {
           priming_started = false;
           state.lab_state = LS_PRIME_EXPERIMENT;
@@ -247,10 +248,9 @@ void loop() {
         // we can stop priming and prepare to idle until
         // we start coasting
         if (millis() - pump_start_time >= PRIME_TIME) {
-          // time to stop priming
           experiment_primed = true;
           if (DEBUG) {
-            // indicates that pumps are powered
+            // indicates that pumps are unpowered
             digitalWrite(PUMP_POWER, LOW);
             digitalWrite(PUMP_1, LOW);
           } else {
@@ -258,6 +258,7 @@ void loop() {
           }
           state.lab_state = LS_IDLE;
           state.last_state = LS_PRIME_EXPERIMENT;
+          // log_write("Entering new state");
         }
       }
       break;
@@ -319,9 +320,11 @@ void loop() {
 void read_serial_input() {
   delay(20);
   int bytes_read = 0;
+  char* fields[NUM_FIELDS];
   // there are 21 fields to read
   for (int i = 0; i < NUM_FIELDS; i++) {
-    char buf[21];
+    // plus 1 for null-terminator
+    char buf[MAX_FIELD_SIZE + 1];
     int bytes = 0;
     char next = Serial.read();
 
@@ -335,12 +338,7 @@ void read_serial_input() {
       next = Serial.read();
     }
     buf[bytes] = '\0';
-    if (i == 0) {
-      state.blue_state = buf[0];
-    }
-//    if (i == 1) {
-//      state.last_blue_time = ((String)buf).toFloat();
-//    }
+    fields[i] = buf;
   }
 }
 
@@ -384,6 +382,8 @@ char* get_time_stamp(char* str) {
   ltoa(minutes, s_min, 10);
   ltoa(seconds, s_sec, 10);
   ltoa(mils, s_mils, 10);
+
+  // concatenate output in str
   strcat(str, "[");
   strcat(str, s_min);
   strcat(str, ":");
@@ -391,6 +391,5 @@ char* get_time_stamp(char* str) {
   strcat(str, ":");
   strcat(str, s_mils);
   strcat(str, "]");
-  // return "[" + s_min + ":" + s_sec + ":" + s_mils + "]";
   return str;
 }
