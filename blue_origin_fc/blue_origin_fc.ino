@@ -321,6 +321,7 @@ void read_serial_input() {
   delay(20);
   int bytes_read = 0;
   char* fields[NUM_FIELDS];
+  
   // there are 21 fields to read
   for (int i = 0; i < NUM_FIELDS; i++) {
     // plus 1 for null-terminator
@@ -337,15 +338,18 @@ void read_serial_input() {
       bytes++;
       next = Serial.read();
     }
+    // terminate the field-string
     buf[bytes] = '\0';
     fields[i] = buf;
   }
+  state.blue_state = fields[0][0];
+  state.last_blue_time = atof(fields[1]);
 }
 
 void read_sensors(EnvDataPtr env_data_ptr) {
-  env_data_ptr->volt_data = (float) analogRead(VOLT_ANALOG_PIN);
-  env_data_ptr->curr_data = (float) analogRead(CURR_ANALOG_PIN);
-  env_data_ptr->temp_data = (float) analogRead(TEMP_ANALOG_PIN);
+  env_data_ptr->volt_data = (float) analogRead(CURR_ANALOG_PIN) * (5.0 / 1023.0);
+  env_data_ptr->curr_data = 5.0 - (float) analogRead(VOLT_ANALOG_PIN) * (5.0 / 1023.0);
+  env_data_ptr->temp_data = (float) analogRead(TEMP_ANALOG_PIN) * (5.0 / 1023.0) * 0.01;
 }
 
 void log_sensor_data(EnvDataPtr env_data_ptr, File data_file) {
