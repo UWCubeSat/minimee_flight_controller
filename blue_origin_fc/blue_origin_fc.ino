@@ -12,8 +12,9 @@
 // 
 // Packets are ASCII string of 21 comma-separated values
 // size of packets <= 250 bytes (buffer is 256 bytes), 
-// individual fields will never exceed 20 bytes Data
+// individual fields will never exceed 20 bytes. Data
 // stream starts approximately one minute after nano-labs are powered up
+// Data stream will close approximately five minutes after landing. 
 
 #include <SD.h>   // exposes functions for writing to/reading from SD card
 
@@ -32,6 +33,9 @@
 // how long (in ms) it takes to prime the experiment
 #define PRIME_TIME 180000
 
+// how long (in ms) it takes to clean the experiment
+#define CLEAN_TIME 180000
+
 // data packet information
 #define MAX_FRAME_SIZE 250
 #define MAX_FIELD_SIZE 20
@@ -43,7 +47,7 @@
 #define LS_IDLE 1
 #define LS_PRIME_EXPERIMENT 2
 #define LS_CELL_PLATING 3
-#define LS_CLEAN_CELL 4
+#define LS_CLEAN_UP 4
 
 // file names for logging, keeping track of state, etc.
 #define LOG_FILE_PATH "log.txt"
@@ -110,8 +114,9 @@ void read_sensors(EnvDataPtr env_data_ptr);
 // format
 void log_sensor_data(EnvDataPtr env_data_ptr, File data_file);
 
-// returns a time stamp formatted MM:SS:MSMS
-char* get_time_stamp();
+// returns a time stamp formatted MM:SS:MSMS.
+// size 'str' buffer
+char* get_time_stamp(char* buf);
 
 // end function prototypes
 
@@ -126,6 +131,9 @@ bool experiment_primed = false;
 
 // has the experiment started?
 bool experiment_started = false;
+
+// have we finished cleaning the cell?
+bool cleaning_finished = false;
 
 // for debugging
 const bool DEBUG = true;
@@ -194,23 +202,30 @@ void pin_init() {
 void loop() {
   static bool priming_started;
   static long pump_start_time;
+  
   static bool plating_started;
   static long last_log_time;
+
+  static long cleaning_start_time;
+  static bool cleaning_started;
+  
   static File data_file;
   static File log_file;
+
+  if (Serial.available() > 0) {
+    read_serial_input();
+  }
   
   switch(state.lab_state) {
+    
     case LS_IDLE:
       {     
-        if (Serial.available() > 0) {
-          read_serial_input();
-        }
-
         // is it time to start priming?
         // check both no state and primed, since blue
         // may enter null state unexpectedly and we
         // want to know if we've already prepared the cell
         if (state.blue_state == BS_NO_STATE && !experiment_primed) {
+          // log state transition
           priming_started = false;
           state.lab_state = LS_PRIME_EXPERIMENT;
           state.last_state = LS_IDLE;
@@ -218,19 +233,25 @@ void loop() {
 
         // can we start the experiment?
         if (state.blue_state == BS_COAST_START) {
+          // log state transition
           plating_started = false;
           state.lab_state = LS_CELL_PLATING;
+          state.last_state = LS_IDLE;
+        }
+
+        // have we landed?
+        if (state.blue_state == BS_LANDING ||
+                state.blue_state == BS_SAFING &&
+                !cleaning_finished) {
+          // log state transition
+          cleaning_started = false;
+          state.lab_state = LS_CLEAN_UP;
           state.last_state = LS_IDLE;
         }
       }
       break;
     case LS_PRIME_EXPERIMENT:
       {
-        // check for available serial data
-        if (Serial.available() > 0) {
-          read_serial_input();
-        }
-
         // is it time to start priming the experiment?
         if (!priming_started) {
           pump_start_time = millis();
@@ -256,18 +277,15 @@ void loop() {
           } else {
             // real clean up logic, not sure what this should be
           }
+          // log state transition
           state.lab_state = LS_IDLE;
           state.last_state = LS_PRIME_EXPERIMENT;
-          // log_write("Entering new state");
         }
       }
       break;
       
     case LS_CELL_PLATING:
       {
-        if (Serial.available() > 0) {
-          read_serial_input();
-        }
         if (!plating_started) {
           data_file = SD.open(DATA_FILE_PATH);
           plating_started = true;
@@ -285,33 +303,49 @@ void loop() {
         if (state.blue_state == BS_COAST_END) {
           digitalWrite(EXPERIMENT, LOW);
           data_file.close();
+          // log state transition
           state.lab_state = LS_IDLE;
           state.last_state = LS_CELL_PLATING;
         }
       }
       break;
 
-    case LS_CLEAN_CELL:
+    case LS_CLEAN_UP:
       {
-        if (Serial.available() > 0) {
-          read_serial_input();
-        }       
+        // is it time to start cleaning up?
+        // we'll leave the data and log files 
+        // open until the very end
+        if (!cleaning_started) {
+          cleaning_start_time = millis();
+          cleaning_started = true;
+          if (DEBUG) {
+            digitalWrite(PUMP_POWER, HIGH);
+            digitalWrite(PUMP_2, HIGH);
+          } else {
+            // real cleaning logic here
+          }
+        } else if (millis() - cleaning_start_time >= CLEAN_TIME) {
+          // we're finished cleaning and can close the files
+          // and get ready again to idle
+          cleaning_finished = true;
+          // log state transition
+          state.lab_state = LS_IDLE;
+          state.last_state = LS_CLEAN_UP;
+          log_file.close();
+        }
       }
       break;
     case LS_NO_STATE:
       {
-        if (Serial.available() > 0) {
-          read_serial_input();
-        }
-        // this is a null state and we should never be here      
+        // this is a null state and we should never be here
       }
-      break;
     default:
       {
-        if (Serial.available() > 0) {
-          read_serial_input();
-        }
-        // this is a null state and we should never be here       
+        // this is a null state and we should never be here  
+
+        // log null state, and state transition
+        state.lab_state = LS_IDLE;
+        state.last_state = LS_NO_STATE;
       }
       break;
   }
@@ -371,7 +405,7 @@ void log_sensor_data(EnvDataPtr env_data_ptr, File data_file) {
   data_file.println(s_temp);
 }
 
-char* get_time_stamp(char* str) {
+char* get_time_stamp(char* buf) {
   // extract components of time stamp
   unsigned long t = millis();
   unsigned long seconds = t / 1000;
@@ -388,12 +422,12 @@ char* get_time_stamp(char* str) {
   ltoa(mils, s_mils, 10);
 
   // concatenate output in str
-  strcat(str, "[");
-  strcat(str, s_min);
-  strcat(str, ":");
-  strcat(str, s_sec);
-  strcat(str, ":");
-  strcat(str, s_mils);
-  strcat(str, "]");
-  return str;
+  strcat(buf, "[");
+  strcat(buf, s_min);
+  strcat(buf, ":");
+  strcat(buf, s_sec);
+  strcat(buf, ":");
+  strcat(buf, s_mils);
+  strcat(buf, "]");
+  return buf;
 }
