@@ -46,9 +46,11 @@
 #define LS_CLEAN_CELL 4
 
 // file names for logging, keeping track of state, etc.
-#define LOG_FILE "log.txt"
-#define STATE_FILE "state.txt"
-#define DATA_FILE "data.csv"
+#define LOG_FILE_PATH "log.txt"
+#define STATE_FILE_PATH "state.txt"
+#define DATA_FILE_PATH "data.csv"
+
+#define LOG_TIME_CUTOFF 1000
 
 // possible states for the blue rocket
 #define BS_NO_STATE '@'
@@ -104,8 +106,12 @@ void pin_init();
 // struct at EnvDataPtr
 void read_sensors(EnvDataPtr env_data_ptr);
 
+// writes data to data_file in comma-separated
+// format
+void log_sensor_data(EnvDataPtr env_data_ptr, File data_file);
+
 // returns a time stamp formatted MM:SS:MSMS
-String get_time_stamp();
+char* get_time_stamp();
 
 // end function prototypes
 
@@ -142,7 +148,7 @@ void setup() {
   }
 
   // determine if we need to read last state
-  if (SD.exists(STATE_FILE)) {
+  if (SD.exists(STATE_FILE_PATH)) {
     // restore_state();
   } else {
     // initialize default state
@@ -185,12 +191,14 @@ void pin_init() {
 
 // main state machine logic
 void loop() {
+  static bool priming_started;
+  static long pump_start_time;
+  static bool plating_started;
+  static long last_log_time;
+  static File data_file;
+  static File log_file;
+  
   switch(state.lab_state) {
-    static bool priming_started;
-    static long pump_start_time;
-    static long last_log_time;
-    static File data_file;
-    static File log_file;
     case LS_IDLE:
       {     
         if (Serial.available() > 0) {
@@ -260,10 +268,25 @@ void loop() {
           read_serial_input();
         }
         if (!plating_started) {
+          data_file = SD.open(DATA_FILE_PATH);
           plating_started = true;
           digitalWrite(EXPERIMENT, HIGH);
+        } else if (millis() - last_log_time >= LOG_TIME_CUTOFF) {
+          // if enough time has passed, take a measurement
+          // of the environment
+          EnvData env_data;
+          read_sensors(&env_data);
+          log_sensor_data(&env_data, data_file);
         }
-        
+
+        // if we're no longer in micro-gravity, 
+        // terminate the experiment
+        if (state.blue_state == BS_COAST_END) {
+          digitalWrite(EXPERIMENT, LOW);
+          data_file.close();
+          state.lab_state = LS_IDLE;
+          state.last_state = LS_CELL_PLATING;
+        }
       }
       break;
 
@@ -315,9 +338,9 @@ void read_serial_input() {
     if (i == 0) {
       state.blue_state = buf[0];
     }
-    if (i == 1) {
-      state.last_blue_time = ((String)buf).toFloat();
-    }
+//    if (i == 1) {
+//      state.last_blue_time = ((String)buf).toFloat();
+//    }
   }
 }
 
@@ -327,14 +350,47 @@ void read_sensors(EnvDataPtr env_data_ptr) {
   env_data_ptr->temp_data = (float) analogRead(TEMP_ANALOG_PIN);
 }
 
-String get_time_stamp() {
+void log_sensor_data(EnvDataPtr env_data_ptr, File data_file) {
+  // convert sensor values to strings
+  char s_volt[10];
+  char s_curr[10];
+  char s_temp[10];
+  dtostrf(env_data_ptr->volt_data, 5, 3, s_volt);
+  dtostrf(env_data_ptr->curr_data, 5, 3, s_curr);
+  dtostrf(env_data_ptr->temp_data, 5, 3, s_temp);
+
+  // write sensor data to data file
+  data_file.print(millis());
+  data_file.print(DELIMITER);
+  data_file.print(s_volt);
+  data_file.print(DELIMITER);
+  data_file.print(s_curr);
+  data_file.print(DELIMITER);
+  data_file.println(s_temp);
+}
+
+char* get_time_stamp(char* str) {
+  // extract components of time stamp
   unsigned long t = millis();
   unsigned long seconds = t / 1000;
   unsigned long minutes = seconds / 60;
   unsigned long mils = t % 1000;
   seconds = seconds % 60;
-  String s_min = String(minutes);
-  String s_sec = String(seconds);
-  String s_mils = String(mils);
-  return "[" + s_min + ":" + s_sec + ":" + s_mils + "]";
+
+  // convert extracted values to strings
+  char s_min[4];
+  char s_sec[3];
+  char s_mils[5];
+  ltoa(minutes, s_min, 10);
+  ltoa(seconds, s_sec, 10);
+  ltoa(mils, s_mils, 10);
+  strcat(str, "[");
+  strcat(str, s_min);
+  strcat(str, ":");
+  strcat(str, s_sec);
+  strcat(str, ":");
+  strcat(str, s_mils);
+  strcat(str, "]");
+  // return "[" + s_min + ":" + s_sec + ":" + s_mils + "]";
+  return str;
 }
