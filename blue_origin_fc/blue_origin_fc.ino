@@ -16,6 +16,7 @@
 // stream starts approximately one minute after nano-labs are powered up
 // Data stream will close approximately five minutes after landing. 
 
+#include <SPI.h>  // required for SD library
 #include <SD.h>   // exposes functions for writing to/reading from SD card
 
 // pin configuration macros
@@ -30,7 +31,7 @@
 
 #define EXPERIMENT 9
 
-#define CURR_GAIN_CONSTANT 68
+#define CURR_GAIN_CONSTANT 68.4
 
 // how long (in ms) it takes to prime the experiment
 #define PRIME_TIME 1000
@@ -54,7 +55,7 @@
 // file names for logging, keeping track of state, etc.
 #define LOG_FILE_PATH "log.txt"
 #define STATE_FILE_PATH "state.txt"
-#define DATA_FILE_PATH "data.csv"
+#define DATA_FILE_PATH "data.txt"
 
 #define LOG_TIME_CUTOFF 1000
 
@@ -120,9 +121,9 @@ void log_sensor_data(EnvDataPtr env_data_ptr, File data_file);
 // size 'str' buffer
 char* get_time_stamp(char* buf);
 
-// send a message to the active logging system
-// (either the serial line, or the log file)
-void log_msg(char* msg);
+//// send a message to the active logging system
+//// (either the serial line, or the log file)
+//void log_msg(char* msg);
 
 // records the state to a state file
 // and prints to the active logging system
@@ -155,11 +156,14 @@ File log_file;
 // global state file
 File state_file;
 
+// global data file
+File data_file;
+
 // end global variables
 
 
 // debug macros
-#define DEBUG
+//#define DEBUG
 
 #ifdef DEBUG
 #define LOG_MSG(x) Serial.print(x)
@@ -192,7 +196,7 @@ void setup() {
     // restore_state();
   //} else {
     // initialize default state
-    LOG_MSG_LN("Initializing with default state");
+    LOG_MSG_LN("default state");
     state.last_blue_time = 0L;
     state.lab_state = LS_IDLE;
     state.blue_state = '@';
@@ -206,15 +210,15 @@ void setup() {
 void serial_init() {
   Serial.begin(115200, SERIAL_8N1);
   while (!Serial);
-  LOG_MSG_LN("Serial initialized");
+  LOG_MSG_LN("Serial init");
 }
 
 void sd_init() {
   if (!SD.begin(CHIP_SELECT)) {
-    LOG_MSG_LN("SD not initialized");  
+    LOG_MSG_LN("SD !init");  
   } else {
     log_file = SD.open(LOG_FILE_PATH, FILE_WRITE);
-    LOG_MSG_LN("SD initialized");
+    LOG_MSG_LN("SD init");
   }
 }
 
@@ -232,7 +236,7 @@ void pin_init() {
   pinMode(VOLT_ANALOG_PIN, INPUT);
   digitalWrite(EXPERIMENT, HIGH);
 
-  LOG_MSG_LN("Pins initialized");
+  LOG_MSG_LN("pins init");
 }
 
 // main state machine logic
@@ -245,8 +249,6 @@ void loop() {
 
   static long cleaning_start_time;
   static bool cleaning_started;
-  
-  static File data_file;
 
   if (Serial.available() > 0) {
     read_serial_input();
@@ -263,7 +265,7 @@ void loop() {
         if (state.blue_state == BS_NO_STATE && !experiment_primed) {
           // TODO: log state transition to state file
           // and to log file
-          LOG_MSG_LN("Transitioning to priming state from idle");
+          LOG_MSG_LN("idle -> priming");
           priming_started = false;
           state.lab_state = LS_PRIME_EXPERIMENT;
           state.last_state = LS_IDLE;
@@ -273,7 +275,7 @@ void loop() {
         if (state.blue_state == BS_COAST_START) {
           // TODO: log state transition to state file
           // and to log file
-          LOG_MSG_LN("Transitioning to experiment state from idle");
+          LOG_MSG_LN("idle -> plating");
           plating_started = false;
           state.lab_state = LS_CELL_PLATING;
           state.last_state = LS_IDLE;
@@ -285,7 +287,7 @@ void loop() {
                 !cleaning_finished) {
           // TODO: log state transition to state file
           // and to log file
-          LOG_MSG_LN("Transitioning to clean up state from idle");
+          LOG_MSG_LN("idle -> clean up");
           cleaning_started = false;
           cleaning_finished = false;
           state.lab_state = LS_CLEAN_UP;
@@ -297,7 +299,7 @@ void loop() {
       {
         // is it time to start priming the experiment?
         if (!priming_started) {
-          LOG_MSG_LN("Priming experiment");
+          LOG_MSG_LN("priming");
           pump_start_time = millis();
           priming_started = true;
           // indicates that pumps are powered
@@ -311,7 +313,7 @@ void loop() {
         // we can stop priming and prepare to idle until
         // we start coasting
         if (millis() - pump_start_time >= PRIME_TIME) {
-          LOG_MSG_LN("Finished priming experiment");
+          LOG_MSG_LN("!priming");
           experiment_primed = true;
           digitalWrite(PUMP_POWER, LOW);
           digitalWrite(PUMP_1, LOW);
@@ -320,7 +322,7 @@ void loop() {
           
           // TODO: log state transition to state file
           // and to log file
-          LOG_MSG_LN("Transition to idle state from priming state");
+          LOG_MSG_LN("priming -> idle");
           state.lab_state = LS_IDLE;
           state.last_state = LS_PRIME_EXPERIMENT;
         }
@@ -330,7 +332,8 @@ void loop() {
     case LS_CELL_PLATING:
       {
         if (!plating_started) {
-          data_file = SD.open(DATA_FILE_PATH);
+          LOG_MSG_LN("plating");
+          data_file = SD.open(DATA_FILE_PATH, FILE_WRITE);
           plating_started = true;
           digitalWrite(EXPERIMENT, LOW);
           last_log_time = millis();
@@ -346,11 +349,12 @@ void loop() {
         // if we're no longer in micro-gravity, 
         // terminate the experiment
         if (state.blue_state == BS_COAST_END) {
-          digitalWrite(EXPERIMENT, HIGH);
           data_file.close();
+          LOG_MSG_LN("!plating");
+          digitalWrite(EXPERIMENT, HIGH);
           // TODO: log state transition to state file
           // and to log file
-          LOG_MSG_LN("Transition to idle state from experiment state");
+          LOG_MSG_LN("plating -> idle");
           state.lab_state = LS_IDLE;
           state.last_state = LS_CELL_PLATING;
         }
@@ -363,6 +367,7 @@ void loop() {
         // we'll leave the data and log files 
         // open until the very end
         if (!cleaning_started) {
+          LOG_MSG_LN("cleaning");
           cleaning_start_time = millis();
           cleaning_started = true;
           digitalWrite(PUMP_POWER, HIGH);
@@ -370,12 +375,13 @@ void loop() {
         } else if (millis() - cleaning_start_time >= CLEAN_TIME) {
           // we're finished cleaning and can close the files
           // and get ready again to idle
+          LOG_MSG_LN("!cleaning");
           cleaning_finished = true;
           digitalWrite(PUMP_POWER, LOW);
           digitalWrite(PUMP_2, LOW);
           // TODO: log state transition to state file
           // and to log file
-          LOG_MSG_LN("Transition to idle state from clean up state");
+          LOG_MSG_LN("clean up -> idle");
           state.lab_state = LS_IDLE;
           state.last_state = LS_CLEAN_UP;
           log_file.close();
@@ -393,7 +399,7 @@ void loop() {
         // log null state, and state transition
         // TODO: log state transition to state file
         // and to log file
-        LOG_MSG_LN("Transition to idle state from null state");
+        LOG_MSG_LN("null -> idle");
         state.lab_state = LS_IDLE;
         state.last_state = LS_NO_STATE;
       }
