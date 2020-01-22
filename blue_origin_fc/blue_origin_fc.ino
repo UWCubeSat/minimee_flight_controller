@@ -150,6 +150,24 @@ bool experiment_started = false;
 // have we finished cleaning the cell?
 bool cleaning_finished = false;
 
+// have we started priming?
+bool priming_started = false;
+
+// when did we start pumping?
+long pump_start_time;
+
+// have we started plating?
+bool plating_started = false;
+
+// when was the last time we took a measurement?
+long last_log_time;
+
+// have we started cleaning the experiment?
+bool cleaning_started;
+
+// when did we start cleaning
+long cleaning_start_time;
+
 // global logging file
 File log_file;
 
@@ -243,15 +261,7 @@ void pin_init() {
 
 // main state machine logic
 void loop() {
-  static bool priming_started;
-  static long pump_start_time;
-  
-  static bool plating_started;
-  static long last_log_time;
-
-  static long cleaning_start_time;
-  static bool cleaning_started;
-
+  // check for serial data
   if (Serial.available() > 0) {
     read_serial_input();
   }
