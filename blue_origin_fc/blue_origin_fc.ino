@@ -151,22 +151,22 @@ bool experiment_started = false;
 bool cleaning_finished = false;
 
 // have we started priming the experiment?
-bool priming_started;
+bool priming_started = false;
 
 // when did we start the pumps?
-long pump_start_time;
+long pump_start_time = 0L;
 
 // have we started plating?
-bool plating_started;
+bool plating_started = false;
 
 // when did we last take a measurement?
-long last_log_time;
+long last_log_time = 0L;
 
 // have we started cleaning?
-bool cleaning_started;
+bool cleaning_started = false;
 
 // when did we start cleaning?
-long cleaning_start_time;
+long cleaning_start_time = 0L;
 
 // global logging file
 File log_file;
@@ -288,7 +288,6 @@ void loop() {
           // TODO: log state transition to state file
           // and to log file
           LOG_MSG_LN("idle -> plating");
-          plating_started = false;
           state.lab_state = LS_CELL_PLATING;
           state.last_state = LS_IDLE;
           // record_state();
