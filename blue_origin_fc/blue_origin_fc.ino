@@ -212,7 +212,7 @@ void setup() {
   // determine if we need to read last state
   if (SD.exists(STATE_FILE_PATH)) {
     LOG_MSG_LN("restore state");
-    //restore_state();
+    restore_state();
   } else {
     // initialize default state
     LOG_MSG_LN("default state");
@@ -280,7 +280,7 @@ void loop() {
           priming_started = false;
           state.lab_state = LS_PRIME_EXPERIMENT;
           state.last_state = LS_IDLE;
-          // record_state();
+          record_state();
         }
 
         // can we start the experiment?
@@ -290,7 +290,7 @@ void loop() {
           LOG_MSG_LN("idle -> plating");
           state.lab_state = LS_CELL_PLATING;
           state.last_state = LS_IDLE;
-          // record_state();
+          record_state();
         }
 
         // have we landed?
@@ -304,7 +304,7 @@ void loop() {
           cleaning_finished = false;
           state.lab_state = LS_CLEAN_UP;
           state.last_state = LS_IDLE;
-          // record_state();
+          record_state();
         }
       }
       break;
@@ -338,7 +338,7 @@ void loop() {
           LOG_MSG_LN("priming -> idle");
           state.lab_state = LS_IDLE;
           state.last_state = LS_PRIME_EXPERIMENT;
-          // record_state();
+          record_state();
         }
       }
       break;
@@ -371,7 +371,7 @@ void loop() {
           LOG_MSG_LN("plating -> idle");
           state.lab_state = LS_IDLE;
           state.last_state = LS_CELL_PLATING;
-          // record_state();
+          record_state();
         }
       }
       break;
@@ -400,7 +400,7 @@ void loop() {
           
           state.lab_state = LS_IDLE;
           state.last_state = LS_CLEAN_UP;
-          //record_state();
+          record_state();
           state_file.close();
           log_file.close();
           SD.remove(STATE_FILE_PATH);
@@ -421,37 +421,42 @@ void loop() {
         LOG_MSG_LN("null -> idle");
         state.lab_state = LS_IDLE;
         state.last_state = LS_NO_STATE;
-        //record_state();
+        record_state();
       }
       break;
   }
 }
 
 void restore_state() {
-  state_file = SD.open(STATE_FILE_PATH, FILE_READ);
+  File state_file = SD.open(STATE_FILE_PATH, FILE_READ);
   if (state_file.peek() > -1) {
-    // need to read last recorded state
-    // state is lab_state + , + last_state + , + blue_state + \n + EOF 
-    // (7 bytes, hence - 7)
-    state_file.seek(state_file.size() - 7);
+    // read state data
     state.lab_state = state_file.read();
+    //Serial.println(state.lab_state);
     state_file.read();  // consume delimiter
     state.last_state = state_file.read();
-    state_file.read();
+    //Serial.println(state.last_state);
+    state_file.read();  // consume delimiter
     state.blue_state = state_file.read();
+    //Serial.println(state.blue_state);
   } else {
-    LOG_MSG_LN("!state_data");
+    LOG_MSG_LN("!state data");
   }
   state_file.close();
   SD.remove(STATE_FILE_PATH);
 }
 
 void record_state() {
-  state_file.print(state.lab_state);
-  state_file.print(DELIMITER);
-  state_file.print(state.last_state);
-  state_file.print(DELIMITER);
-  state_file.println(state.blue_state);
+  if (SD.exists("state.txt")) {
+    SD.remove("state.txt");
+  }
+  File state_file = SD.open("state.txt", FILE_WRITE);
+  state_file.print(1);
+  state_file.print(',');
+  state_file.print(0);
+  state_file.print(',');
+  state_file.println('@');
+  state_file.close();
 }
 
 void read_serial_input() {
