@@ -171,9 +171,6 @@ long cleaning_start_time = 0L;
 // global logging file
 File log_file;
 
-// global state file
-File state_file;
-
 // global data file
 File data_file;
 
@@ -181,7 +178,7 @@ File data_file;
 
 
 // debug macros
-#define DEBUG
+// #define DEBUG
 
 #ifdef DEBUG
 #define LOG_MSG(x) Serial.print(x)
@@ -221,7 +218,6 @@ void setup() {
     state.blue_state = '@';
     state.last_state = LS_NO_STATE;
   }
-  state_file = SD.open(STATE_FILE_PATH);
   
   // configure pins
   pin_init();
@@ -284,7 +280,8 @@ void loop() {
         }
 
         // can we start the experiment?
-        else if (state.blue_state == BS_COAST_START) {
+        else if (state.blue_state == BS_COAST_START ||
+                    state.blue_state == BS_APOGEE) {
           // TODO: log state transition to state file
           // and to log file
           LOG_MSG_LN("idle -> plating");
@@ -401,7 +398,6 @@ void loop() {
           state.lab_state = LS_IDLE;
           state.last_state = LS_CLEAN_UP;
           record_state();
-          state_file.close();
           log_file.close();
           SD.remove(STATE_FILE_PATH);
         }
@@ -432,13 +428,10 @@ void restore_state() {
   if (state_file.peek() > -1) {
     // read state data
     state.lab_state = state_file.read();
-    //Serial.println(state.lab_state);
     state_file.read();  // consume delimiter
     state.last_state = state_file.read();
-    //Serial.println(state.last_state);
     state_file.read();  // consume delimiter
     state.blue_state = state_file.read();
-    //Serial.println(state.blue_state);
   } else {
     LOG_MSG_LN("!state data");
   }
@@ -447,15 +440,15 @@ void restore_state() {
 }
 
 void record_state() {
-  if (SD.exists("state.txt")) {
-    SD.remove("state.txt");
+  if (SD.exists(STATE_FILE_PATH)) {
+    SD.remove(STATE_FILE_PATH);
   }
-  File state_file = SD.open("state.txt", FILE_WRITE);
-  state_file.print(1);
-  state_file.print(',');
-  state_file.print(0);
-  state_file.print(',');
-  state_file.println('@');
+  File state_file = SD.open(STATE_FILE_PATH, FILE_WRITE);
+  state_file.print(state.lab_state);
+  state_file.print(DELIMITER);
+  state_file.print(state.last_state);
+  state_file.print(DELIMITER);
+  state_file.println(state.blue_state);
   state_file.close();
 }
 
