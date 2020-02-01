@@ -252,6 +252,10 @@ void pin_init() {
   pinMode(VOLT_ANALOG_PIN, INPUT);
   digitalWrite(EXPERIMENT, HIGH);
 
+  // valves are active low
+  // pumps are active high
+  // experiment is active low
+
   LOG_MSG_LN("pins init");
 }
 
