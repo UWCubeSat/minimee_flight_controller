@@ -163,13 +163,14 @@ void restore_state();
 
 // global variables
 
-// stores state information
+// contains information about the flight state of MiniMEE
+// and New Shepard
 State state;
 
-// global logging file
+// acts as record of events during flight
 File log_file;
 
-// global data file
+// stores environmental/experimental data
 File data_file;
 
 // end global variables
@@ -265,53 +266,68 @@ void pin_init() {
 
 // main state machine logic
 void loop() {
+  // time serial processing
+  unsigned long t = millis();
   if (Serial.available() > 0) {
     read_serial_input();
   }
+  unsigned long r = millis();
+  LOG_MSG("SERIAL took: ");
+  LOG_MSG(r - t);
+  LOG_MSG_LN(" ms");
   
   switch(state.lab_state) {
     
     case LS_IDLE:
       {     
+        t = millis();
         // start priming?
-        if (state.blue_state == BS_SEP_COMMANDED) {
+        if (state.blue_state == BS_SEP_COMMANDED &&
+              !(state.stage & PRIMED)) {
           state.lab_state = LS_PRIME_EXPERIMENT;
           state.last_state = LS_IDLE;
           state.stage |= PRIMING;
-          state.stage &= !IDLING;
+          state.stage &= ~IDLING;
           record_state();
           
           log_msg(state.last_blue_time, "idle->priming");
         }
 
         // can we start the experiment?
-        else if (state.blue_state == BS_COAST_START ||
-                    state.blue_state == BS_APOGEE) {
+        else if ((state.blue_state == BS_COAST_START ||
+                    state.blue_state == BS_APOGEE) &&
+                    (state.stage & PRIMED)) {
           state.lab_state = LS_CELL_PLATING;
           state.last_state = LS_IDLE;
           state.stage |= PLATING;
-          state.stage &= !IDLING;
+          state.stage &= ~IDLING;
           record_state();
           
           log_msg(state.last_blue_time, "idle->plating");
         }
 
         // have we landed?
-        else if (state.blue_state == BS_LANDING ||
-                state.blue_state == BS_SAFING) {
+        else if ((state.blue_state == BS_LANDING ||
+                state.blue_state == BS_SAFING) &&
+                (state.stage & PRIMED)) {
           state.lab_state = LS_CLEAN_UP;
           state.last_state = LS_IDLE;
           state.stage |= CLEANING_1;
-          state.stage &= !IDLING;
+          state.stage &= ~IDLING;
           record_state();
           
           log_msg(state.last_blue_time, "idle->clean");
         }
+        r = millis();
+        LOG_MSG("IDLE took: ");
+        LOG_MSG(r - t);
+        LOG_MSG_LN(" ms");
       }
     break;
     
     case LS_PRIME_EXPERIMENT:
       {
+        t = millis();
         static long prime_commanded_time = millis();
         static long prime_start_time = 0L;
         
@@ -326,9 +342,8 @@ void loop() {
         }
         // done priming?
         else if (millis() - prime_start_time >= PRIME_TIME) {
-          state.stage |= PRIMED;
-          state.stage &= !PLATING;
-          state.stage |= IDLING;
+          state.stage |= PRIMED | IDLING;
+          state.stage &= ~PRIMING;
           state.lab_state = LS_IDLE;
           state.last_state = LS_PRIME_EXPERIMENT;
           record_state();   
@@ -339,11 +354,16 @@ void loop() {
           
           log_msg(state.last_blue_time, "priming->idle");
         }
+        r = millis();
+        LOG_MSG("PRIME took: ");
+        LOG_MSG(r - t);
+        LOG_MSG_LN(" ms");
       }
     break;
       
     case LS_CELL_PLATING:
       {
+        t = millis();
         static long last_log_time = 0L;
         static bool started = false;
         
@@ -368,9 +388,8 @@ void loop() {
         else if (state.blue_state == BS_COAST_END) {
           state.lab_state = LS_IDLE;
           state.last_state = LS_CELL_PLATING;
-          state.stage |= IDLING;
-          state.stage |= PLATED;
-          state.stage &= !PLATING;
+          state.stage |= IDLING | PLATED;
+          state.stage &= ~PLATING;
           record_state();
           
           log_msg(state.last_blue_time, "!plating");
@@ -380,11 +399,16 @@ void loop() {
           data_file.close();
           digitalWrite(EXPERIMENT, HIGH);
         }
+        r = millis();
+        LOG_MSG("PLATING took: ");
+        LOG_MSG(r - t);
+        LOG_MSG_LN(" ms");
       }
       break;
 
     case LS_CLEAN_UP:
       {
+        t = millis();
         static uint8_t stage = 1;
         static uint8_t step = 1;
         static bool stage_started = false;
@@ -394,12 +418,13 @@ void loop() {
           if (!stage_started) {
             if (step == 3) {
               state.stage |= CLEANING_3;
-              state.stage &= !CLEANING_2;
+              state.stage &= ~CLEANING_2;
               record_state();
             } else if (step == 5) {
               state.stage |= CLEANING_5;
-              state.stage &= !CLEANING_4;
+              state.stage &= ~CLEANING_4;
             }
+            record_state();
             log_msg(state.last_blue_time, "clean_stage_1");
             // digitalWrite(SOL_2, LOW);
             // digitalWrite(SOL_3, LOW);
@@ -408,12 +433,12 @@ void loop() {
             digitalWrite(PUMP_POWER, HIGH);
             digitalWrite(PUMP_2, HIGH);
             pump_start_time = millis();
+            stage_started = true;
           }
           
           if (millis() - pump_start_time >= STAGE_1_LENGTH) {
             pump_start_time = 0L;
             stage_started = false;
-            step++;
             
             // turn everything off
             digitalWrite(PUMP_POWER, HIGH);
@@ -423,30 +448,39 @@ void loop() {
             // digitalWrite(SOL_3, HIGH);
             if (step == 5) {
               // update and record state
-              state.cleaned = true;
+              state.stage &= ~CLEANING_5;
+              state.stage |= CLEANED | IDLING;
+//              state.stage |= IDLING;
               state.lab_state = LS_IDLE;
               state.last_state = LS_CLEAN_UP;
               record_state();
-              log_msg(state.last_blue_time, "!cleaning");
-              
+
               digitalWrite(PUMP_POWER, LOW);
               digitalWrite(PUMP_2, LOW);
+              
+              log_msg(state.last_blue_time, "!cleaning");
+              
               log_msg(state.last_blue_time, "clean->idle");
 
               // close streams
               log_file.close();
               SD.remove(STATE_FILE_PATH);
             } else {
-              // advance to stage 2
               stage++;
+              step++;
             }
           }
         } else if (stage == 2) {
           if (!stage_started) {
             if (step == 2) {
-              
+              state.stage &= ~CLEANING_1;
+              state.stage |= CLEANING_2; 
+            } else if (step == 4) {
+              state.stage &= ~CLEANING_3;
+              state.stage |= CLEANING_4;
             }
-            log_msg("clean_stage_2");
+            record_state();
+            log_msg(state.last_blue_time, "clean_stage_2");
             // TODO: open S1 & S3
             // digitalWrite(SOL_1, LOW);
             // digitalWrite(SOL_3, LOW);
@@ -471,6 +505,10 @@ void loop() {
             // digitalWrite(SOL_3, LOW);
           }
         }
+        r = millis();
+        LOG_MSG("PLATING took: ");
+        LOG_MSG(r - t);
+        LOG_MSG_LN(" ms");
       }
     break;
     
