@@ -1,8 +1,9 @@
-// Eli Reed, November 18th 2019
-// written for the NanoLab mission
-
-// Controller for the electroplating experiment we're running
-// for our WASGC-1 Mission (name to-be-changed hopefully).
+// Eli Reed (sailedeer)
+// November 18th, 2019
+// 
+// Flight controller for MiniMEE mission. Maintains state of
+// payload, facilitates communication with New Shepard,
+// and controls experimentation. 
 
 // Blue Serial Connection Spec:
 // Baud Rate: 115200
@@ -29,15 +30,29 @@
 #define PUMP_1 5
 #define PUMP_2 6
 
+// TODO: Decide on pin configuration for solenoids, motor
+//#define SOL_1
+//#define SOL_2
+//#define SOL_3
+//
+//#define MOTOR
+
 #define EXPERIMENT 9
 
+// Sensor gain constants
 #define CURR_GAIN_CONSTANT 68.4
 
 // how long (in ms) it takes to prime the experiment
 #define PRIME_TIME 1000
 
-// how long (in ms) it takes to clean the experiment
-#define CLEAN_TIME 1000
+// how long (in ms) to wait before priming
+#define PRIME_WAIT_TIME 1000
+
+// how long (in ms) it takes to finish stage 1
+#define STAGE_1_LENGTH 1000
+
+// how long (in ms) it takes to finish stage 2
+#define STAGE_2_LENGTH 1000
 
 // data packet information
 #define MAX_FRAME_SIZE 250
@@ -57,6 +72,7 @@
 #define STATE_FILE_PATH "state.txt"
 #define DATA_FILE_PATH "data.txt"
 
+// how long to wait before taking another measurement
 #define LOG_TIME_CUTOFF 1000
 
 // possible states for the blue rocket
@@ -75,6 +91,19 @@
 #define BS_SAFING 'L'
 #define BS_MISSION_END 'M'
 
+// bit masks for stage
+#define IDLING      0x0001  // 1 << 0
+#define PRIMING     0x0002  // 1 << 1
+#define PRIMED      0x0004  // 1 << 2
+#define PLATING     0x0008  // 1 << 3
+#define PLATED      0x0010  // 1 << 4
+#define CLEANING_1  0x0020  // 1 << 5
+#define CLEANING_2  0x0040  // 1 << 6
+#define CLEANING_3  0x0080  // 1 << 7
+#define CLEANING_4  0x0100  // 1 << 8
+#define CLEANING_5  0x0200  // 1 << 9
+#define CLEANED     0x0400  // 1 << 10
+
 
 // typedefs
 
@@ -88,9 +117,10 @@ typedef struct env_data_st {
 // encapsulates state information
 typedef struct state_st {
   float last_blue_time;
-  char lab_state;
+  uint16_t stage;
+  uint8_t lab_state;
   char blue_state;
-  char last_state;
+  uint8_t last_state;
 } State;
 
 // end typedefs
@@ -115,15 +145,10 @@ void read_sensors(EnvDataPtr env_data_ptr);
 
 // writes data to data_file in comma-separated
 // format
-void log_sensor_data(EnvDataPtr env_data_ptr, File data_file);
+void log_sensor_data(const EnvDataPtr env_data_ptr, File data_file);
 
-// returns a time stamp formatted MM:SS:MSMS.
-// size 'str' buffer
-char* get_time_stamp(char* buf);
-
-//// send a message to the active logging system
-//// (either the serial line, or the log file)
-//void log_msg(char* msg);
+// log message to logging system
+void log_msg(const float t, const char* msg);
 
 // records the state to a state file
 // and prints to the active logging system
@@ -141,33 +166,6 @@ void restore_state();
 // stores state information
 State state;
 
-// has the experiment been primed?
-bool experiment_primed = false;
-
-// has the experiment started?
-bool experiment_started = false;
-
-// have we finished cleaning the cell?
-bool cleaning_finished = false;
-
-// have we started priming the experiment?
-bool priming_started = false;
-
-// when did we start the pumps?
-long pump_start_time = 0L;
-
-// have we started plating?
-bool plating_started = false;
-
-// when did we last take a measurement?
-long last_log_time = 0L;
-
-// have we started cleaning?
-bool cleaning_started = false;
-
-// when did we start cleaning?
-long cleaning_start_time = 0L;
-
 // global logging file
 File log_file;
 
@@ -178,13 +176,14 @@ File data_file;
 
 
 // debug macros
+
 // #define DEBUG
 
 #ifdef DEBUG
 #define LOG_MSG(x) Serial.print(x)
 #define LOG_MSG_LN(x) Serial.println(x)
 #else
-#define LOG_MSG(x)  log_file.print(x)
+#define LOG_MSG(x) log_file.print(x)
 #define LOG_MSG_LN(x) log_file.println(x)
 #endif
 
@@ -192,12 +191,9 @@ File data_file;
 
 
 // configures and initializes serial, sd,
-// pump, and experiment interface
+// pump, solenoid, experiment interfaces
 void setup() {
-  // we want to ensure that we can log what's
-  // happening with the cubesat. When we're
-  // debugging then, output is reflected to the serial line
-  // and thus we need it initialized first.
+  // need serial line configured first if debugging
   #ifdef DEBUG
   serial_init();
   sd_init();
@@ -208,15 +204,16 @@ void setup() {
 
   // determine if we need to read last state
   if (SD.exists(STATE_FILE_PATH)) {
-    LOG_MSG_LN("restore state");
     restore_state();
+    log_msg(state.last_blue_time, "hot");
   } else {
     // initialize default state
-    LOG_MSG_LN("default state");
-    state.last_blue_time = 0L;
+    state.last_blue_time = 0.0f;
+    state.stage = IDLING;
     state.lab_state = LS_IDLE;
     state.blue_state = '@';
     state.last_state = LS_NO_STATE;
+    log_msg(state.last_blue_time, "cold");
   }
   
   // configure pins
@@ -225,16 +222,16 @@ void setup() {
 
 void serial_init() {
   Serial.begin(115200, SERIAL_8N1);
-  while (!Serial);
-  LOG_MSG_LN("Serial init");
+  while (!Serial);    // might want a timeout here
+  log_msg(0.0f, "Serial");
 }
 
 void sd_init() {
   if (!SD.begin(CHIP_SELECT)) {
-    LOG_MSG_LN("SD !init");  
+    log_msg(0.0f, "!SD");  
   } else {
     log_file = SD.open(LOG_FILE_PATH, FILE_WRITE);
-    LOG_MSG_LN("SD init");
+    log_msg(0.0f, "SD");
   }
 }
 
@@ -244,7 +241,13 @@ void pin_init() {
   pinMode(PUMP_2, OUTPUT);
   pinMode(EXPERIMENT, OUTPUT);
 
-  // TODO: add solenoid pins
+  // pin for controlling motor
+//  pinMode(MOTOR, OUTPUT);
+
+  // pins for solenoids
+//  pinMode(SOL_1, OUTPUT);
+//  pinMode(SOL_2, OUTPUT);
+//  pinMode(SOL_3, OUTPUT):
 
   // pins for sensor reading
   pinMode(TEMP_ANALOG_PIN, INPUT);
@@ -255,8 +258,9 @@ void pin_init() {
   // valves are active low
   // pumps are active high
   // experiment is active low
+  // TODO: active state of motor?
 
-  LOG_MSG_LN("pins init");
+  log_msg(state.last_blue_time, "pins");
 }
 
 // main state machine logic
@@ -269,148 +273,212 @@ void loop() {
     
     case LS_IDLE:
       {     
-        // is it time to start priming?
-        // check both no state and primed, since blue
-        // may enter null state unexpectedly and we
-        // want to know if we've already prepared the cell
-        if (state.blue_state == BS_NO_STATE && !experiment_primed) {
-          // TODO: log state transition to state file
-          // and to log file
-          LOG_MSG_LN("idle -> priming");
-          priming_started = false;
+        // start priming?
+        if (state.blue_state == BS_SEP_COMMANDED) {
           state.lab_state = LS_PRIME_EXPERIMENT;
           state.last_state = LS_IDLE;
+          state.stage |= PRIMING;
+          state.stage &= !IDLING;
           record_state();
+          
+          log_msg(state.last_blue_time, "idle->priming");
         }
 
         // can we start the experiment?
         else if (state.blue_state == BS_COAST_START ||
                     state.blue_state == BS_APOGEE) {
-          // TODO: log state transition to state file
-          // and to log file
-          LOG_MSG_LN("idle -> plating");
           state.lab_state = LS_CELL_PLATING;
           state.last_state = LS_IDLE;
+          state.stage |= PLATING;
+          state.stage &= !IDLING;
           record_state();
+          
+          log_msg(state.last_blue_time, "idle->plating");
         }
 
         // have we landed?
-        else if ((state.blue_state == BS_LANDING ||
-                state.blue_state == BS_SAFING) &&
-                !cleaning_finished) {
-          // TODO: log state transition to state file
-          // and to log file
-          LOG_MSG_LN("idle -> clean up");
-          cleaning_started = false;
-          cleaning_finished = false;
+        else if (state.blue_state == BS_LANDING ||
+                state.blue_state == BS_SAFING) {
           state.lab_state = LS_CLEAN_UP;
           state.last_state = LS_IDLE;
+          state.stage |= CLEANING_1;
+          state.stage &= !IDLING;
           record_state();
+          
+          log_msg(state.last_blue_time, "idle->clean");
         }
       }
-      break;
+    break;
+    
     case LS_PRIME_EXPERIMENT:
       {
-        // is it time to start priming the experiment?
-        if (!priming_started) {
-          LOG_MSG_LN("priming");
-          pump_start_time = millis();
-          priming_started = true;
-          // indicates that pumps are powered
-          digitalWrite(PUMP_POWER, HIGH);
-          digitalWrite(PUMP_1, HIGH);
+        static long prime_commanded_time = millis();
+        static long prime_start_time = 0L;
+        
+        // prime time?
+        if (millis() - prime_commanded_time >= PRIME_WAIT_TIME) {
+          prime_commanded_time = 0L;
+          log_msg(state.last_blue_time, "priming");
 
-          // TODO: add solenoid control logic
+          // engage the motor
+//          digitalWrite(MOTOR, HIGH);
+          prime_start_time = millis();
         }
-
-        // if we've sufficiently primed the experiment,
-        // we can stop priming and prepare to idle until
-        // we start coasting
-        if (millis() - pump_start_time >= PRIME_TIME) {
-          LOG_MSG_LN("!priming");
-          experiment_primed = true;
-          digitalWrite(PUMP_POWER, LOW);
-          digitalWrite(PUMP_1, LOW);
-
-          // TODO: add solenoid control logic
-          
-          // TODO: log state transition to state file
-          // and to log file
-          LOG_MSG_LN("priming -> idle");
+        // done priming?
+        else if (millis() - prime_start_time >= PRIME_TIME) {
+          state.stage |= PRIMED;
+          state.stage &= !PLATING;
+          state.stage |= IDLING;
           state.lab_state = LS_IDLE;
           state.last_state = LS_PRIME_EXPERIMENT;
-          record_state();
+          record_state();   
+          log_msg(state.last_blue_time, "!priming");
+
+          // turn off the motor
+          //digitalWrite(MOTOR, LOW);
+          
+          log_msg(state.last_blue_time, "priming->idle");
         }
       }
-      break;
+    break;
       
     case LS_CELL_PLATING:
       {
-        if (!plating_started) {
-          LOG_MSG_LN("plating");
-          data_file = SD.open(DATA_FILE_PATH, FILE_WRITE);
-          plating_started = true;
+        static long last_log_time = 0L;
+        static bool started = false;
+        
+        if (!started) {
+          log_msg(state.last_blue_time, "plating");
+
+          // initialize experiment
           digitalWrite(EXPERIMENT, LOW);
+          started = true;
+          
+          data_file = SD.open(DATA_FILE_PATH, FILE_WRITE);
           last_log_time = millis();
-        } else if (millis() - last_log_time >= LOG_TIME_CUTOFF) {
-          // if enough time has passed, take a measurement
-          // of the environment
+        }
+        // time to measure?
+        else if (millis() - last_log_time >= LOG_TIME_CUTOFF) {
           last_log_time = millis();
           EnvData env_data;
           read_sensors(&env_data);
           log_sensor_data(&env_data, data_file);
         }
-
-        // if we're no longer in micro-gravity, 
-        // terminate the experiment
-        if (state.blue_state == BS_COAST_END) {
-          data_file.close();
-          LOG_MSG_LN("!plating");
-          digitalWrite(EXPERIMENT, HIGH);
-          // TODO: log state transition to state file
-          // and to log file
-          LOG_MSG_LN("plating -> idle");
+        // time to stop plating?
+        else if (state.blue_state == BS_COAST_END) {
           state.lab_state = LS_IDLE;
           state.last_state = LS_CELL_PLATING;
+          state.stage |= IDLING;
+          state.stage |= PLATED;
+          state.stage &= !PLATING;
           record_state();
+          
+          log_msg(state.last_blue_time, "!plating");
+          log_msg(state.last_blue_time, "plating->idle");
+          
+          // clean up
+          data_file.close();
+          digitalWrite(EXPERIMENT, HIGH);
         }
       }
       break;
 
     case LS_CLEAN_UP:
       {
-        // is it time to start cleaning up?
-        // we'll leave the data and log files 
-        // open until the very end
-        if (!cleaning_started) {
-          LOG_MSG_LN("cleaning");
-          cleaning_start_time = millis();
-          cleaning_started = true;
-          digitalWrite(PUMP_POWER, HIGH);
-          digitalWrite(PUMP_2, HIGH);
-        } else if (millis() - cleaning_start_time >= CLEAN_TIME) {
-          // we're finished cleaning and can close the files
-          // and get ready again to idle
-          LOG_MSG_LN("!cleaning");
-          cleaning_finished = true;
-          digitalWrite(PUMP_POWER, LOW);
-          digitalWrite(PUMP_2, LOW);
-          // TODO: log state transition to state file
-          // and to log file
-          LOG_MSG_LN("clean up -> idle");
+        static uint8_t stage = 1;
+        static uint8_t step = 1;
+        static bool stage_started = false;
+        static long pump_start_time = 0L;
+
+        if (stage == 1) {
+          if (!stage_started) {
+            if (step == 3) {
+              state.stage |= CLEANING_3;
+              state.stage &= !CLEANING_2;
+              record_state();
+            } else if (step == 5) {
+              state.stage |= CLEANING_5;
+              state.stage &= !CLEANING_4;
+            }
+            log_msg(state.last_blue_time, "clean_stage_1");
+            // digitalWrite(SOL_2, LOW);
+            // digitalWrite(SOL_3, LOW);
+                           
+            // run p2
+            digitalWrite(PUMP_POWER, HIGH);
+            digitalWrite(PUMP_2, HIGH);
+            pump_start_time = millis();
+          }
           
-          state.lab_state = LS_IDLE;
-          state.last_state = LS_CLEAN_UP;
-          record_state();
-          log_file.close();
-          SD.remove(STATE_FILE_PATH);
+          if (millis() - pump_start_time >= STAGE_1_LENGTH) {
+            pump_start_time = 0L;
+            stage_started = false;
+            step++;
+            
+            // turn everything off
+            digitalWrite(PUMP_POWER, HIGH);
+            digitalWrite(PUMP_2, HIGH);
+
+            // digitalWrite(SOL_2, HIGH);
+            // digitalWrite(SOL_3, HIGH);
+            if (step == 5) {
+              // update and record state
+              state.cleaned = true;
+              state.lab_state = LS_IDLE;
+              state.last_state = LS_CLEAN_UP;
+              record_state();
+              log_msg(state.last_blue_time, "!cleaning");
+              
+              digitalWrite(PUMP_POWER, LOW);
+              digitalWrite(PUMP_2, LOW);
+              log_msg(state.last_blue_time, "clean->idle");
+
+              // close streams
+              log_file.close();
+              SD.remove(STATE_FILE_PATH);
+            } else {
+              // advance to stage 2
+              stage++;
+            }
+          }
+        } else if (stage == 2) {
+          if (!stage_started) {
+            if (step == 2) {
+              
+            }
+            log_msg("clean_stage_2");
+            // TODO: open S1 & S3
+            // digitalWrite(SOL_1, LOW);
+            // digitalWrite(SOL_3, LOW);
+            
+            // run p1
+            digitalWrite(PUMP_POWER, HIGH);
+            digitalWrite(PUMP_1, HIGH);
+            pump_start_time = millis();
+          }
+          
+          if (millis() - pump_start_time >= STAGE_2_LENGTH) {
+            pump_start_time = 0;
+            stage_started = false;
+            step++;
+            stage--;
+            
+            // turn everything off
+            digitalWrite(PUMP_POWER, HIGH);
+            digitalWrite(PUMP_1, HIGH);
+
+            // digitalWrite(SOL_1, LOW);
+            // digitalWrite(SOL_3, LOW);
+          }
         }
       }
-      break;
+    break;
+    
     case LS_NO_STATE:
       {
         // this is a null state and we should never be here
       }
+      
     default:
       {
         // this is a null state and we should never be here  
@@ -418,12 +486,13 @@ void loop() {
         // log null state, and state transition
         // TODO: log state transition to state file
         // and to log file
-        LOG_MSG_LN("null -> idle");
         state.lab_state = LS_IDLE;
         state.last_state = LS_NO_STATE;
+        state.stage |= IDLING;
         record_state();
+        log_msg(state.last_blue_time, "null->idle");
       }
-      break;
+    break;
   }
 }
 
@@ -437,7 +506,7 @@ void restore_state() {
     state_file.read();  // consume delimiter
     state.blue_state = state_file.read();
   } else {
-    LOG_MSG_LN("!state data");
+    LOG_MSG_LN("!state_data");
   }
   state_file.close();
   SD.remove(STATE_FILE_PATH);
@@ -452,17 +521,21 @@ void record_state() {
   state_file.print(DELIMITER);
   state_file.print(state.last_state);
   state_file.print(DELIMITER);
-  state_file.println(state.blue_state);
+  state_file.print(state.blue_state);
+  state_file.println(DELIMITER);
   state_file.close();
 }
 
 void read_serial_input() {
-  delay(20);
+  // according to NRFF Toolbox, need to wait
+  // 17 ms for frame to finish transmission
+  delay(17);
   int bytes_read = 0;
   char* fields[NUM_FIELDS];
-  
-  // there are 21 fields to read
-  for (int i = 0; i < NUM_FIELDS; i++) {
+
+  // process the frame
+  int i;
+  for (i = 0; i < NUM_FIELDS; i++) {
     // plus 1 for null-terminator
     char buf[MAX_FIELD_SIZE + 1];
     int bytes = 0;
@@ -481,17 +554,19 @@ void read_serial_input() {
     buf[bytes] = '\0';
     fields[i] = buf;
   }
+  // extract what we care about
   state.blue_state = fields[0][0];
   state.last_blue_time = atof(fields[1]);
 }
 
 void read_sensors(EnvDataPtr env_data_ptr) {
   env_data_ptr->curr_data = (float) analogRead(CURR_ANALOG_PIN) * (5.0 / 1023.0) / CURR_GAIN_CONSTANT;
+  // TODO: Establish a better reference voltage than "5.0" (this is currently an assumption)
   env_data_ptr->volt_data = 5.0 - (float) analogRead(VOLT_ANALOG_PIN) * (5.0 / 1023.0);
   env_data_ptr->temp_data = (float) analogRead(TEMP_ANALOG_PIN) * (5.0 / 1023.0) * 100;
 }
 
-void log_sensor_data(EnvDataPtr env_data_ptr, File data_file) {
+void log_sensor_data(const EnvDataPtr env_data_ptr, File data_file) {
   // convert sensor values to strings
   char s_volt[10];
   char s_curr[10];
@@ -502,7 +577,7 @@ void log_sensor_data(EnvDataPtr env_data_ptr, File data_file) {
 
   // write sensor data to data file
   #ifdef DEBUG
-  LOG_MSG(millis());
+  LOG_MSG(state.last_blue_time);
   LOG_MSG(DELIMITER);
   LOG_MSG(s_volt);
   LOG_MSG(DELIMITER);
@@ -510,7 +585,7 @@ void log_sensor_data(EnvDataPtr env_data_ptr, File data_file) {
   LOG_MSG(DELIMITER);
   LOG_MSG_LN(s_temp);
   #else
-  data_file.print(millis());
+  data_file.print(state.last_blue_time);
   data_file.print(DELIMITER);
   data_file.print(s_volt);
   data_file.print(DELIMITER);
@@ -520,29 +595,8 @@ void log_sensor_data(EnvDataPtr env_data_ptr, File data_file) {
   #endif
 }
 
-char* get_time_stamp(char* buf) {
-  // extract components of time stamp
-  unsigned long t = millis();
-  unsigned long seconds = t / 1000;
-  unsigned long minutes = seconds / 60;
-  unsigned long mils = t % 1000;
-  seconds = seconds % 60;
-
-  // convert extracted values to strings
-  char s_min[4];
-  char s_sec[3];
-  char s_mils[5];
-  ltoa(minutes, s_min, 10);
-  ltoa(seconds, s_sec, 10);
-  ltoa(mils, s_mils, 10);
-
-  // concatenate output in str
-  strcat(buf, "[");
-  strcat(buf, s_min);
-  strcat(buf, ":");
-  strcat(buf, s_sec);
-  strcat(buf, ":");
-  strcat(buf, s_mils);
-  strcat(buf, "]");
-  return buf;
+void log_msg(const float t, const char* msg) {
+  LOG_MSG(t);
+  LOG_MSG(DELIMITER);
+  LOG_MSG_LN(msg);
 }
