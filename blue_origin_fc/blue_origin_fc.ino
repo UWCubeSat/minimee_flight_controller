@@ -21,21 +21,20 @@
 #include <SD.h>   // exposes functions for writing to/reading from SD card
 
 // pin configuration macros
-#define CHIP_SELECT 10
-#define TEMP_ANALOG_PIN A0
-#define CURR_ANALOG_PIN A1
-#define VOLT_ANALOG_PIN A2
+#define CHIP_SELECT A0
+#define TEMP_ANALOG_PIN A1
+#define CURR_ANALOG_PIN A2
+#define VOLT_ANALOG_PIN A3
 
 #define PUMP_POWER 4
 #define PUMP_1 5
 #define PUMP_2 6
 
-// TODO: Decide on pin configuration for solenoids, motor
-//#define SOL_1
-//#define SOL_2
-//#define SOL_3
-//
-//#define MOTOR
+#define SOL_1 7
+#define SOL_2 8
+#define SOL_3 2
+
+#define MOTOR 3
 
 #define EXPERIMENT 9
 
@@ -43,10 +42,10 @@
 #define CURR_GAIN_CONSTANT 68.4
 
 // how long (in ms) it takes to prime the experiment
-#define PRIME_TIME 1000
+#define PRIME_TIME 2000
 
 // how long (in ms) to wait before priming
-#define PRIME_WAIT_TIME 1000
+#define PRIME_WAIT_TIME 5000
 
 // how long (in ms) it takes to finish stage 1
 #define STAGE_1_LENGTH 1000
@@ -178,7 +177,7 @@ File data_file;
 
 // debug macros
 
-// #define DEBUG
+#define DEBUG
 
 #ifdef DEBUG
 #define LOG_MSG(x) Serial.print(x)
@@ -237,29 +236,38 @@ void sd_init() {
 }
 
 void pin_init() {
+  // analogReference(INTERNAL);
+  
   pinMode(PUMP_POWER, OUTPUT);
   pinMode(PUMP_1, OUTPUT);
   pinMode(PUMP_2, OUTPUT);
   pinMode(EXPERIMENT, OUTPUT);
 
   // pin for controlling motor
-//  pinMode(MOTOR, OUTPUT);
+  pinMode(MOTOR, OUTPUT);
 
   // pins for solenoids
-//  pinMode(SOL_1, OUTPUT);
-//  pinMode(SOL_2, OUTPUT);
-//  pinMode(SOL_3, OUTPUT):
+  pinMode(SOL_1, OUTPUT);
+  pinMode(SOL_2, OUTPUT);
+  pinMode(SOL_3, OUTPUT);
 
   // pins for sensor reading
   pinMode(TEMP_ANALOG_PIN, INPUT);
   pinMode(CURR_ANALOG_PIN, INPUT);
   pinMode(VOLT_ANALOG_PIN, INPUT);
-  digitalWrite(EXPERIMENT, HIGH);
 
   // valves are active low
   // pumps are active high
+  // pump power active low
+  // motor active low
   // experiment is active low
   // TODO: active state of motor?
+  digitalWrite(PUMP_POWER, HIGH);
+  digitalWrite(SOL_1, HIGH);
+  digitalWrite(SOL_2, HIGH);
+  digitalWrite(SOL_3, HIGH);
+  digitalWrite(MOTOR, HIGH);
+  digitalWrite(EXPERIMENT, HIGH);
 
   log_msg(state.last_blue_time, "pins");
 }
@@ -267,20 +275,20 @@ void pin_init() {
 // main state machine logic
 void loop() {
   // time serial processing
-  unsigned long t = millis();
+  //unsigned long t = millis();
   if (Serial.available() > 0) {
     read_serial_input();
   }
-  unsigned long r = millis();
-  LOG_MSG("SERIAL took: ");
-  LOG_MSG(r - t);
-  LOG_MSG_LN(" ms");
+  //unsigned long r = millis();
+//  LOG_MSG("SERIAL took: ");
+//  LOG_MSG(r - t);
+//  LOG_MSG_LN(" ms");
   
   switch(state.lab_state) {
     
     case LS_IDLE:
       {     
-        t = millis();
+        //t = millis();
         // start priming?
         if (state.blue_state == BS_SEP_COMMANDED &&
               !(state.stage & PRIMED)) {
@@ -309,7 +317,8 @@ void loop() {
         // have we landed?
         else if ((state.blue_state == BS_LANDING ||
                 state.blue_state == BS_SAFING) &&
-                (state.stage & PRIMED)) {
+                (state.stage & PRIMED) && 
+                !(state.stage & CLEANED)) {
           state.lab_state = LS_CLEAN_UP;
           state.last_state = LS_IDLE;
           state.stage |= CLEANING_1;
@@ -318,30 +327,29 @@ void loop() {
           
           log_msg(state.last_blue_time, "idle->clean");
         }
-        r = millis();
-        LOG_MSG("IDLE took: ");
-        LOG_MSG(r - t);
-        LOG_MSG_LN(" ms");
+//        r = millis();
+//        LOG_MSG("IDLE took: ");
+//        LOG_MSG(r - t);
+//        LOG_MSG_LN(" ms");
       }
     break;
     
     case LS_PRIME_EXPERIMENT:
       {
-        t = millis();
-        static long prime_commanded_time = millis();
+//        t = millis();
         static long prime_start_time = 0L;
-        
-        // prime time?
-        if (millis() - prime_commanded_time >= PRIME_WAIT_TIME) {
-          prime_commanded_time = 0L;
+        static bool priming = false;
+        // start priming
+        if (!priming) {
           log_msg(state.last_blue_time, "priming");
 
           // engage the motor
-//          digitalWrite(MOTOR, HIGH);
+          digitalWrite(MOTOR, LOW);
           prime_start_time = millis();
+          priming = true;
         }
-        // done priming?
-        else if (millis() - prime_start_time >= PRIME_TIME) {
+        
+        if (millis() - prime_start_time >= PRIME_TIME) {
           state.stage |= PRIMED | IDLING;
           state.stage &= ~PRIMING;
           state.lab_state = LS_IDLE;
@@ -350,20 +358,20 @@ void loop() {
           log_msg(state.last_blue_time, "!priming");
 
           // turn off the motor
-          //digitalWrite(MOTOR, LOW);
+          digitalWrite(MOTOR, HIGH);
           
           log_msg(state.last_blue_time, "priming->idle");
         }
-        r = millis();
-        LOG_MSG("PRIME took: ");
-        LOG_MSG(r - t);
-        LOG_MSG_LN(" ms");
+//        r = millis();
+//        LOG_MSG("PRIME took: ");
+//        LOG_MSG(r - t);
+//        LOG_MSG_LN(" ms");
       }
     break;
       
     case LS_CELL_PLATING:
       {
-        t = millis();
+//        t = millis();
         static long last_log_time = 0L;
         static bool started = false;
         
@@ -399,38 +407,38 @@ void loop() {
           data_file.close();
           digitalWrite(EXPERIMENT, HIGH);
         }
-        r = millis();
-        LOG_MSG("PLATING took: ");
-        LOG_MSG(r - t);
-        LOG_MSG_LN(" ms");
+//        r = millis();
+//        LOG_MSG("PLATING took: ");
+//        LOG_MSG(r - t);
+//        LOG_MSG_LN(" ms");
       }
       break;
 
     case LS_CLEAN_UP:
       {
-        t = millis();
+//        t = millis();
         static uint8_t stage = 1;
         static uint8_t step = 1;
         static bool stage_started = false;
         static long pump_start_time = 0L;
 
+//        LOG_MSG_LN(step);
         if (stage == 1) {
           if (!stage_started) {
             if (step == 3) {
               state.stage |= CLEANING_3;
               state.stage &= ~CLEANING_2;
-              record_state();
             } else if (step == 5) {
               state.stage |= CLEANING_5;
               state.stage &= ~CLEANING_4;
             }
             record_state();
             log_msg(state.last_blue_time, "clean_stage_1");
-            // digitalWrite(SOL_2, LOW);
-            // digitalWrite(SOL_3, LOW);
+            digitalWrite(SOL_2, LOW);
+            digitalWrite(SOL_3, LOW);
                            
             // run p2
-            digitalWrite(PUMP_POWER, HIGH);
+            digitalWrite(PUMP_POWER, LOW);
             digitalWrite(PUMP_2, HIGH);
             pump_start_time = millis();
             stage_started = true;
@@ -442,21 +450,17 @@ void loop() {
             
             // turn everything off
             digitalWrite(PUMP_POWER, HIGH);
-            digitalWrite(PUMP_2, HIGH);
-
-            // digitalWrite(SOL_2, HIGH);
-            // digitalWrite(SOL_3, HIGH);
+            digitalWrite(PUMP_2, LOW);
+            LOG_MSG_LN("disabling valves 2 and 3");
+            digitalWrite(SOL_2, HIGH);
+            digitalWrite(SOL_3, HIGH);
             if (step == 5) {
               // update and record state
               state.stage &= ~CLEANING_5;
               state.stage |= CLEANED | IDLING;
-//              state.stage |= IDLING;
               state.lab_state = LS_IDLE;
               state.last_state = LS_CLEAN_UP;
               record_state();
-
-              digitalWrite(PUMP_POWER, LOW);
-              digitalWrite(PUMP_2, LOW);
               
               log_msg(state.last_blue_time, "!cleaning");
               
@@ -466,7 +470,7 @@ void loop() {
               log_file.close();
               SD.remove(STATE_FILE_PATH);
             } else {
-              stage++;
+              stage = 2;
               step++;
             }
           }
@@ -481,34 +485,34 @@ void loop() {
             }
             record_state();
             log_msg(state.last_blue_time, "clean_stage_2");
-            // TODO: open S1 & S3
-            // digitalWrite(SOL_1, LOW);
-            // digitalWrite(SOL_3, LOW);
+            digitalWrite(SOL_1, LOW);
+            digitalWrite(SOL_3, LOW);
             
             // run p1
-            digitalWrite(PUMP_POWER, HIGH);
+            digitalWrite(PUMP_POWER, LOW);
             digitalWrite(PUMP_1, HIGH);
             pump_start_time = millis();
+            stage_started = true;
           }
           
           if (millis() - pump_start_time >= STAGE_2_LENGTH) {
             pump_start_time = 0;
             stage_started = false;
             step++;
-            stage--;
+            stage = 1;
             
             // turn everything off
             digitalWrite(PUMP_POWER, HIGH);
-            digitalWrite(PUMP_1, HIGH);
-
-            // digitalWrite(SOL_1, LOW);
-            // digitalWrite(SOL_3, LOW);
+            digitalWrite(PUMP_1, LOW);
+            
+            digitalWrite(SOL_1, HIGH);
+            digitalWrite(SOL_3, HIGH);
           }
         }
-        r = millis();
-        LOG_MSG("PLATING took: ");
-        LOG_MSG(r - t);
-        LOG_MSG_LN(" ms");
+//        r = millis();
+//        LOG_MSG("PLATING took: ");
+//        LOG_MSG(r - t);
+//        LOG_MSG_LN(" ms");
       }
     break;
     
@@ -535,6 +539,7 @@ void loop() {
 }
 
 void restore_state() {
+  #ifndef DEBUG
   File state_file = SD.open(STATE_FILE_PATH, FILE_READ);
   if (state_file.peek() > -1) {
     // read state data
@@ -548,9 +553,11 @@ void restore_state() {
   }
   state_file.close();
   SD.remove(STATE_FILE_PATH);
+  #endif
 }
 
 void record_state() {
+  #ifndef DEBUG
   if (SD.exists(STATE_FILE_PATH)) {
     SD.remove(STATE_FILE_PATH);
   }
@@ -562,6 +569,7 @@ void record_state() {
   state_file.print(state.blue_state);
   state_file.println(DELIMITER);
   state_file.close();
+  #endif
 }
 
 void read_serial_input() {
