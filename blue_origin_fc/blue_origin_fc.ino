@@ -42,10 +42,10 @@
 #define CURR_GAIN_CONSTANT 68.4
 
 // how long (in ms) it takes to prime the experiment
-#define PRIME_TIME 2000
+#define PRIME_TIME 1000
 
 // how long (in ms) to wait before priming
-#define PRIME_WAIT_TIME 5000
+#define PRIME_WAIT_TIME 1000
 
 // how long (in ms) it takes to finish stage 1
 #define STAGE_1_LENGTH 1000
@@ -91,6 +91,7 @@
 #define BS_MISSION_END 'M'
 
 // bit masks for stage
+#define LS_NO_STATE      0x0000
 #define LS_IDLING_M      0x0001  // 1 << 0
 #define LS_PRIMING_M     0x0002  // 1 << 1
 #define LS_PRIMED_M      0x0004  // 1 << 2
@@ -102,6 +103,7 @@
 #define LS_CLEANING_4_M  0x0100  // 1 << 8, implies PRIMED, PLATED
 #define LS_CLEANING_5_M  0x0200  // 1 << 9, implies PRIMED, PLATED
 #define LS_CLEANED_M     0x0400  // 1 << 10, implies PRIMED, PLATED, CLEANING 1-5
+#define LS_WAITING_M     0x0800  // 1 << 11
 
 #define MAGIC_NUMBER 0x451b
 
@@ -213,7 +215,7 @@ void setup() {
   } else {
     // initialize default state
     state.last_blue_time = 0.0f;
-    state.lab_state = LS_IDLING_M;
+    state.lab_state  = LS_NO_STATE;
     state.blue_state = BS_NO_STATE;
     state.last_blue_state = BS_NO_STATE;
     log_msg(state.last_blue_time, "cold");
@@ -221,13 +223,12 @@ void setup() {
   
   // configure pins
   pin_init();
-
-  analogReference(INTERNAL);
 }
 
 void serial_init() {
   Serial.begin(115200, SERIAL_8N1);
-  while (!Serial);    // might want a timeout here
+  while (!Serial);    
+  Serial.setTimeout(20);  // ensures that we capture every packet
   log_msg(0.0f, "Serial");
 }
 
@@ -241,7 +242,7 @@ void sd_init() {
 }
 
 void pin_init() {
-  // analogReference(INTERNAL);
+  analogReference(INTERNAL);
   
   pinMode(PUMP_POWER, OUTPUT);
   pinMode(PUMP_1, OUTPUT);
@@ -285,7 +286,7 @@ void loop() {
   // loop() specific timer
   // declared static so timer waits in states
   // are 'non-blocking'
-  static unsigned long loop_time;
+  static unsigned long loop_time = 0;
   
   if (Serial.available() > 0) {
     read_serial_input();
@@ -294,30 +295,41 @@ void loop() {
   if (state.blue_state != state.last_blue_state) {
     // this means we've transitioned state,
     // so we need to record
-    // record_state();
+    record_state();
   }
-
-  // Serial.println(state.blue_state);
 
   switch(state.blue_state) {
 
     case BS_SEP_COMMANDED:    // CC is free
     {
+      static unsigned long sep_cmd_time = millis();
+      
+      if (!check_lab_state(LS_PRIMED_M)) {
+        if (check_lab_state(LS_PRIMING_M)) {
+          if (millis() -
+        } else {
+          
+        }
+      }
       // (1) wait until rockets are done firing
       
       // timers for state are:
       // prime time
       // engine firing time
 
-      log_msg(0.0, "sep_cmd");
-
-      // engine firing timer
-      loop_time = millis();
-      
-      if (millis() - loop_time >= PRIME_WAIT_TIME && 
-          !(state.lab_state & LS_PRIMING_M)) {
-        // set priming bit and record state
+      // do we really even need this wait here? 
+//      if (!(state.lab_state & LS_WAITING_M)) {
+      if (!check_lab_state(LS_PRIMING_M | LS_PRIMED_M)) {
+        // engine firing timer
+        loop_time = millis();
         state.lab_state &= ~LS_IDLING_M;
+        state.lab_state |= LS_PRIMING_M;
+        log_msg(state.last_blue_time, "waiting");
+      }
+      
+      else if (millis() - loop_time >= PRIME_WAIT_TIME) {
+        // set priming bit and record state
+        state.lab_state &= ~LS_WAITING_M;
         state.lab_state |= LS_PRIMING_M;
         record_state();
 
@@ -331,11 +343,11 @@ void loop() {
       }
 
       // (2) wait until priming finished (assuming it has started)
-      if ((state.lab_state & LS_PRIMING_M) &&
+      else if ((state.lab_state & LS_PRIMING_M) &&
         millis() - loop_time >= PRIME_TIME) {
         // stop priming
         state.lab_state &= ~LS_PRIMING_M;
-        state.lab_state |= LS_PRIMED_M;
+        state.lab_state |= LS_PRIMED_M | LS_IDLING_M;
         record_state();
 
         // disengage the motor
@@ -358,6 +370,8 @@ void loop() {
       // take a measurement (every .25 seconds)
       if ((state.lab_state & LS_PRIMED_M) &&
           !(state.lab_state & LS_PLATING_M)) {
+        state.lab_state &= ~LS_IDLING_M;
+        state.lab_state |= LS_PLATING_M;
         digitalWrite(EXPERIMENT, LOW);
         
         data_file = SD.open(DATA_FILE_PATH, FILE_WRITE);
@@ -402,98 +416,95 @@ void loop() {
 
     case BS_SAFING:   
     {
-      log_msg(state.last_blue_time, "cleaning");
       static uint8_t stage = 1;
       static uint8_t step = 1;
       static bool stage_started = false;
-      
-////      LOG_MSG_LN(step);
-      if (stage == 1) {
-        if (!stage_started) {
-          if (step == 3) {
-            state.lab_state |= LS_CLEANING_3_M;
-            state.lab_state &= ~LS_CLEANING_2_M;
-          } else if (step == 5) {
-            state.lab_state |= LS_CLEANING_5_M;
-            state.lab_state &= ~LS_CLEANING_4_M;
-          }
-          record_state();
-          log_msg(state.last_blue_time, "clean_stage_1");
-          digitalWrite(SOL_2, LOW);
-          digitalWrite(SOL_3, LOW);
-                         
-          // run p2
-          digitalWrite(PUMP_POWER, LOW);
-          digitalWrite(PUMP_2, HIGH);
-          loop_time = millis();
-          stage_started = true;
-        }
-        
-        if (millis() - loop_time >= STAGE_1_LENGTH) {
-          loop_time = 0L;
-          
-          // turn everything off
-          digitalWrite(PUMP_POWER, HIGH);
-          digitalWrite(PUMP_2, LOW);
-//          LOG_MSG_LN("disabling valves 2 and 3");
-          digitalWrite(SOL_2, HIGH);
-          digitalWrite(SOL_3, HIGH);
-          if (step == 5) {
-            // update and record state
-            state.lab_state &= ~LS_CLEANING_5_M;
-            state.lab_state |= LS_CLEANED_M | LS_IDLING_M;
-//            state.lab_state = LS_IDLE;
-//            state.last_state = LS_CLEAN_UP;
+
+      if (!(state.lab_state & LS_CLEANED_M)) {
+        if (stage == 1) {
+          if (!stage_started) {
+            if (step == 3) {
+              state.lab_state |= LS_CLEANING_3_M;
+              state.lab_state &= ~LS_CLEANING_2_M;
+            } else if (step == 5) {
+              state.lab_state |= LS_CLEANING_5_M;
+              state.lab_state &= ~LS_CLEANING_4_M;
+            }
             record_state();
+            log_msg(state.last_blue_time, "clean_stage_1");
+            digitalWrite(SOL_2, LOW);
+            digitalWrite(SOL_3, LOW);
+                           
+            // run p2
+            digitalWrite(PUMP_POWER, LOW);
+            digitalWrite(PUMP_2, HIGH);
+            loop_time = millis();
+            stage_started = true;
+          }
+          
+          if (millis() - loop_time >= STAGE_1_LENGTH) {
+            loop_time = 0L;
             
-            log_msg(state.last_blue_time, "!cleaning");
+            // turn everything off
+            digitalWrite(PUMP_POWER, HIGH);
+            digitalWrite(PUMP_2, LOW);
+            digitalWrite(SOL_2, HIGH);
+            digitalWrite(SOL_3, HIGH);
+            if (step == 5) {
+              // update and record state
+              state.lab_state &= ~LS_CLEANING_5_M;
+              state.lab_state |= LS_CLEANED_M | LS_IDLING_M;
+              record_state();
+              
+              log_msg(state.last_blue_time, "!cleaning");
+              
+              log_msg(state.last_blue_time, "clean->idle");
+    
+              // close streams
+              log_file.close();
+              SD.remove(STATE_FILE_PATH);
+            } else {
+              stage = 2;
+              step++;
+              stage_started = false;
+            }
+          }
+        } else if (stage == 2) {
+          if (!stage_started) {
+            if (step == 2) {
+              state.lab_state &= ~LS_CLEANING_1_M;
+              state.lab_state |= LS_CLEANING_2_M; 
+            } else if (step == 4) {
+              state.lab_state &= ~LS_CLEANING_3_M;
+              state.lab_state |= LS_CLEANING_4_M;
+            }
+            record_state();
+            log_msg(state.last_blue_time, "clean_stage_2");
+            digitalWrite(SOL_1, LOW);
+            digitalWrite(SOL_3, LOW);
             
-            log_msg(state.last_blue_time, "clean->idle");
-  
-            // close streams
-            log_file.close();
-            SD.remove(STATE_FILE_PATH);
-          } else {
-            stage = 2;
-            step++;
+            // run p1
+            digitalWrite(PUMP_POWER, LOW);
+            digitalWrite(PUMP_1, HIGH);
+            loop_time = millis();
+            stage_started = true;
+          }
+          
+          if (millis() - loop_time >= STAGE_2_LENGTH) {
+            loop_time = 0;
             stage_started = false;
+            step++;
+            stage = 1;
+            
+            // turn everything off
+            digitalWrite(PUMP_POWER, HIGH);
+            digitalWrite(PUMP_1, LOW);
+            
+            digitalWrite(SOL_1, HIGH);
+            digitalWrite(SOL_3, HIGH);
           }
-        }
-      } else if (stage == 2) {
-        if (!stage_started) {
-          if (step == 2) {
-            state.lab_state &= ~LS_CLEANING_1_M;
-            state.lab_state |= LS_CLEANING_2_M; 
-          } else if (step == 4) {
-            state.lab_state &= ~LS_CLEANING_3_M;
-            state.lab_state |= LS_CLEANING_4_M;
-          }
-          record_state();
-          log_msg(state.last_blue_time, "clean_stage_2");
-          digitalWrite(SOL_1, LOW);
-          digitalWrite(SOL_3, LOW);
-          
-          // run p1
-          digitalWrite(PUMP_POWER, LOW);
-          digitalWrite(PUMP_1, HIGH);
-          loop_time = millis();
-          stage_started = true;
-        }
-        
-        if (millis() - loop_time >= STAGE_2_LENGTH) {
-          loop_time = 0;
-          stage_started = false;
-          step++;
-          stage = 1;
-          
-          // turn everything off
-          digitalWrite(PUMP_POWER, HIGH);
-          digitalWrite(PUMP_1, LOW);
-          
-          digitalWrite(SOL_1, HIGH);
-          digitalWrite(SOL_3, HIGH);
-        }
-      } 
+        } 
+      }
     }
     break;
 
@@ -564,45 +575,22 @@ void record_state() {
 void read_serial_input() {
   // according to NRFF Toolbox, need to wait
   // 17 ms for frame to finish transmission
-  delay(17);
   int fields_read = 0;
-  char* fields[NUM_FIELDS];
+  char *fields[NUM_FIELDS];
+  char buf[MAX_FRAME_SIZE + 1];
+  size_t bytes = Serial.readBytes(buf, MAX_FRAME_SIZE);
+  buf[bytes] = '\0';
 
   // process the frame
-  int i;
-  for (i = 0; i < NUM_FIELDS; i++) {
-    // plus 1 for null-terminator
-    char buf[MAX_FIELD_SIZE + 1];
-    int bytes = 0;
-    char next = Serial.read();
+  char * ptr;
+  ptr = strtok(buf, ",");
+  int i = 0;
+  while (ptr != NULL) {
+    fields[i] = ptr;
+    ptr = strtok(NULL, ",");
+    i++;
+  }
 
-    // each field is guaranteed to end in a comma
-    // and be no more than 20 bytes in length
-    while (next > -1 &&
-              bytes <= MAX_FIELD_SIZE &&
-              next != DELIMITER) {
-      buf[bytes] = next;
-      bytes++;
-      next = Serial.read();
-    }
-    // terminate the field-string
-    if (bytes != 0) {
-      fields_read++;
-    }
-    buf[bytes] = '\0';
-    log_msg(13.37, buf);
-    Serial.println(i);
-    fields[i] = buf;
-  }
-  if (fields_read != NUM_FIELDS) {
-    // are we debugging?
-    #ifndef DEBUG
-    // spin wait until we get a new frame
-    while (!Serial.available()) {} // about 50 ms
-    #endif    // DEBUG
-    // we might be debugging, but log either way
-    log_msg(state.last_blue_time, "!serial read");
-  }
   // extract what we care about
   state.blue_state = fields[0][0];
   state.last_blue_time = atof(fields[1]);
@@ -713,4 +701,8 @@ uint8_t cleaning_stage(uint16_t &curr_clean_stage,
 //        }
 //    }
 //  }
+}
+
+bool check_lab_state(uint16_t mask) {
+  return (state.lab_state & mask);
 }
