@@ -160,8 +160,6 @@ void record_state();
 // restores the state from the state file
 void restore_state();
 
-uint8_t cleaning_stage(uint16_t curr_clean_stage, uint16_t next_clean_stage);
-
 // end function prototypes
 
 
@@ -194,6 +192,233 @@ File data_file;
 
 // end debug macros
 
+// initialize serial interface
+void serial_init() {
+  Serial.begin(115200, SERIAL_8N1);
+  while (!Serial);
+  Serial.setTimeout(20);  // ensures that we capture every packet
+  log_msg(0.0f, "Serial");
+}
+
+// initialize SD card interface
+void sd_init() {
+  if (!SD.begin(CHIP_SELECT)) {
+    log_msg(0.0f, "!SD");  
+  } else {
+    log_file = SD.open(LOG_FILE_PATH, FILE_WRITE);
+    log_msg(0.0f, "SD");
+  }
+}
+
+// initialize pin 
+void pin_init() {
+  // nominally, this should be 1.1V
+  analogReference(INTERNAL);
+
+  // initialize pump pins
+  pinMode(PUMP_POWER, OUTPUT);
+  pinMode(PUMP_1, OUTPUT);
+  pinMode(PUMP_2, OUTPUT);
+
+  // initialize experiment pin
+  pinMode(EXPERIMENT, OUTPUT);
+
+  // initialize motor pin
+  pinMode(MOTOR, OUTPUT);
+
+  // initialize solenoid pins
+  pinMode(SOL_1, OUTPUT);
+  pinMode(SOL_2, OUTPUT);
+  pinMode(SOL_3, OUTPUT);
+
+  // pins for sensor reading
+  pinMode(TEMP_ANALOG_PIN, INPUT);
+  pinMode(CURR_ANALOG_PIN, INPUT);
+  pinMode(VOLT_ANALOG_PIN, INPUT);
+
+  // valves are active low
+  // pumps are active high
+  // pump power active low
+  // motor active low
+  // experiment is active low
+  // TODO: active state of motor?
+  digitalWrite(PUMP_POWER, HIGH);
+  digitalWrite(PUMP_1, LOW);
+  digitalWrite(PUMP_2, LOW);
+  digitalWrite(SOL_1, HIGH);
+  digitalWrite(SOL_2, HIGH);
+  digitalWrite(SOL_3, HIGH);
+  digitalWrite(MOTOR, HIGH);
+  digitalWrite(EXPERIMENT, HIGH);
+
+  log_msg(state.last_blue_time, "pins");
+}
+
+// reads state information from state file
+// and attempts to re-initialize the lab to that state. 
+void restore_state() {
+  #ifndef DEBUG
+  File state_file = SD.open(STATE_FILE_PATH, FILE_READ);
+  if (state_file.peek() > -1) {
+    // read state data
+    state.lab_state = state_file.read();
+    state_file.read();  // consume delimiter
+    state.last_state = state_file.read();
+    state_file.read();  // consume delimiter
+    state.blue_state = state_file.read();
+  } else {
+    LOG_MSG_LN("!state_data");
+  }
+  state_file.close();
+  SD.remove(STATE_FILE_PATH);
+  #endif
+}
+
+// writes current lab state to state file
+void record_state() {
+  #ifndef DEBUG
+  if (SD.exists(STATE_FILE_PATH)) {
+    SD.remove(STATE_FILE_PATH);
+  }
+  // record:
+  //  magic number (first 2 bytes)
+  //  last blue time (precisely 4 bytes (float))
+  //  last blue state (1 byte (ASCII char)
+  //  last lab state (1 byte (between 1 and 11)
+
+  File state_file = SD.open(STATE_FILE_PATH, FILE_WRITE);
+  // write dummy 2 bytes
+  state_file.print((uint16_t) 0);
+
+  // begin writing real state data
+  state_file.print(state.lab_state);
+  state_file.print(DELIMITER);
+  state_file.print(state.last_state);
+  state_file.print(DELIMITER);
+  state_file.print(state.blue_state);
+  state_file.println(DELIMITER);
+  state_file.close();
+  #endif
+}
+
+// attempts to read a new serial packet from the 
+// featherframe serial interface. 
+void read_serial_input() {
+  // according to NRFF Toolbox, need to wait
+  // 17 ms for frame to finish transmission
+  int fields_read = 0;
+  char *fields[NUM_FIELDS];
+  char buf[MAX_FRAME_SIZE + 1];
+  size_t bytes = Serial.readBytes(buf, MAX_FRAME_SIZE);
+  buf[bytes] = '\0';
+
+  // process the frame
+  char * ptr;
+  ptr = strtok(buf, ",");
+  int i = 0;
+  while (ptr != NULL) {
+    fields[i] = ptr;
+    ptr = strtok(NULL, ",");
+    i++;
+  }
+
+  // extract what we care about
+  state.blue_state = fields[0][0];
+  state.last_blue_time = atof(fields[1]);
+  // TODO: expand this list?
+}
+
+// poll sensors for current environmental data. Stores results
+// in pointer to an EnvData struct
+void read_sensors(EnvDataPtr env_data_ptr) {
+  env_data_ptr->curr_data = (float) analogRead(CURR_ANALOG_PIN) * (V_REF / 1023.0) / CURR_GAIN_CONSTANT;
+  env_data_ptr->volt_data = V_REF - (float) analogRead(VOLT_ANALOG_PIN) * (V_REF / 1023.0);
+  env_data_ptr->temp_data = (float) analogRead(TEMP_ANALOG_PIN) * (V_REF / 1023.0) * 100;
+}
+
+// write polled sensor data to file
+void log_sensor_data(const EnvDataPtr env_data_ptr, File data_file) {
+  // convert sensor values to strings
+  char s_volt[10];
+  char s_curr[10];
+  char s_temp[10];
+  dtostrf(env_data_ptr->volt_data, 5, 3, s_volt);
+  dtostrf(env_data_ptr->curr_data, 5, 3, s_curr);
+  dtostrf(env_data_ptr->temp_data, 5, 3, s_temp);
+
+  // write sensor data to data file
+  #ifdef DEBUG
+  LOG_MSG(state.last_blue_time);
+  LOG_MSG(DELIMITER);
+  LOG_MSG(s_volt);
+  LOG_MSG(DELIMITER);
+  LOG_MSG(s_curr);
+  LOG_MSG(DELIMITER);
+  LOG_MSG_LN(s_temp);
+  #else
+  data_file.print(state.last_blue_time);
+  data_file.print(DELIMITER);
+  data_file.print(s_volt);
+  data_file.print(DELIMITER);
+  data_file.print(s_curr);
+  data_file.print(DELIMITER);
+  data_file.println(s_temp);
+  #endif
+}
+
+// write a message to the log file at time t
+void log_msg(const float t, const char* msg) {
+  LOG_MSG(t);
+  LOG_MSG(DELIMITER);
+  LOG_MSG_LN(msg);
+}
+
+// check if the bits specified by mask are flipped
+bool check_lab_state(const uint16_t &mask) {
+  return (state.lab_state & mask);
+}
+
+// start the first cleaning step
+void start_cleaning_1() {
+  log_msg(state.last_blue_time, "clean1");
+  digitalWrite(SOL_2, LOW);
+  digitalWrite(SOL_3, LOW);
+                 
+  // run p2
+  digitalWrite(PUMP_POWER, LOW);
+  digitalWrite(PUMP_2, HIGH);
+}
+
+// stop the first cleaning step
+void stop_cleaning_1() {
+  digitalWrite(SOL_2, HIGH);
+  digitalWrite(SOL_3, HIGH);
+                 
+  // run p2
+  digitalWrite(PUMP_POWER, HIGH);
+  digitalWrite(PUMP_2, LOW);
+}
+
+// start the second cleaning step
+void start_cleaning_2() {
+  log_msg(state.last_blue_time, "clean2");
+  digitalWrite(SOL_1, LOW);
+  digitalWrite(SOL_3, LOW);
+
+  // run p1
+  digitalWrite(PUMP_POWER, LOW);
+  digitalWrite(PUMP_1, HIGH);
+}
+
+// stop the second cleaning step
+void stop_cleaning_2() {
+  digitalWrite(SOL_1, HIGH);
+  digitalWrite(SOL_3, HIGH);
+
+  // run p1
+  digitalWrite(PUMP_POWER, HIGH);
+  digitalWrite(PUMP_1, LOW);
+}
 
 // configures and initializes serial, sd,
 // pump, solenoid, experiment interfaces
@@ -224,60 +449,7 @@ void setup() {
   pin_init();
 }
 
-void serial_init() {
-  Serial.begin(115200, SERIAL_8N1);
-  while (!Serial);
-  Serial.setTimeout(20);  // ensures that we capture every packet
-  log_msg(0.0f, "Serial");
-}
-
-void sd_init() {
-  if (!SD.begin(CHIP_SELECT)) {
-    log_msg(0.0f, "!SD");  
-  } else {
-    log_file = SD.open(LOG_FILE_PATH, FILE_WRITE);
-    log_msg(0.0f, "SD");
-  }
-}
-
-void pin_init() {
-  analogReference(INTERNAL);
-  
-  pinMode(PUMP_POWER, OUTPUT);
-  pinMode(PUMP_1, OUTPUT);
-  pinMode(PUMP_2, OUTPUT);
-  pinMode(EXPERIMENT, OUTPUT);
-
-  // pin for controlling motor
-  pinMode(MOTOR, OUTPUT);
-
-  // pins for solenoids
-  pinMode(SOL_1, OUTPUT);
-  pinMode(SOL_2, OUTPUT);
-  pinMode(SOL_3, OUTPUT);
-
-  // pins for sensor reading
-  pinMode(TEMP_ANALOG_PIN, INPUT);
-  pinMode(CURR_ANALOG_PIN, INPUT);
-  pinMode(VOLT_ANALOG_PIN, INPUT);
-
-  // valves are active low
-  // pumps are active high
-  // pump power active low
-  // motor active low
-  // experiment is active low
-  // TODO: active state of motor?
-  digitalWrite(PUMP_POWER, HIGH);
-  digitalWrite(SOL_1, HIGH);
-  digitalWrite(SOL_2, HIGH);
-  digitalWrite(SOL_3, HIGH);
-  digitalWrite(MOTOR, HIGH);
-  digitalWrite(EXPERIMENT, HIGH);
-
-  log_msg(state.last_blue_time, "pins");
-}
-
-// main state machine logic
+// state machine predicated on state of blue rocket
 void loop() {
   if (Serial.available() > 0) {
     read_serial_input();
@@ -386,108 +558,66 @@ void loop() {
         static unsigned long clean_time;
         if (check_lab_state(LS_CLEANING_1_M)) {
           // transition to 2
+          if (millis() - clean_time >= STAGE_1_LENGTH) {
+            state.lab_state &= ~LS_CLEANING_1_M;
+            state.lab_state |= LS_CLEANING_2_M;
+            stop_cleaning_1();
+            start_cleaning_2();
+            clean_time = millis();
+          }
+          // cleaning_step_1();
         } else if (check_lab_state(LS_CLEANING_2_M)) {
           // transition to 3
+          if (millis() - clean_time >= STAGE_2_LENGTH) {
+            state.lab_state &= ~LS_CLEANING_2_M;
+            state.lab_state |= LS_CLEANING_3_M;
+            stop_cleaning_2();
+            start_cleaning_1();
+            clean_time = millis();
+          }
         } else if (check_lab_state(LS_CLEANING_3_M)) {
           // transition to 4
+          if (millis() - clean_time >= STAGE_1_LENGTH) {
+            state.lab_state &= ~LS_CLEANING_3_M;
+            state.lab_state |= LS_CLEANING_4_M;
+            stop_cleaning_1();
+            start_cleaning_2();
+            clean_time = millis();
+          }
         } else if (check_lab_state(LS_CLEANING_4_M)) {
           // transition to 5
+          if (millis() - clean_time >= STAGE_2_LENGTH) {
+            state.lab_state &= ~LS_CLEANING_4_M;
+            state.lab_state |= LS_CLEANING_5_M;
+            stop_cleaning_2();
+            start_cleaning_1();
+            clean_time = millis();
+          }
         } else if (check_lab_state(LS_CLEANING_5_M)) {
           // end
+          if (millis() - clean_time >= STAGE_1_LENGTH) {
+            state.lab_state &= ~LS_CLEANING_5_M;
+            state.lab_state |= LS_CLEANED_M | LS_IDLING_M;
+            stop_cleaning_1();
+            record_state();
+
+            // clean up whole lab
+            log_msg(state.last_blue_time, "!cleaning");
+            
+            log_msg(state.last_blue_time, "clean->idle");
+  
+            // close streams
+            log_file.close();
+            SD.remove(STATE_FILE_PATH);
+          }
         } else {
           // we haven't done any cleaning yet
           state.lab_state &= ~LS_IDLING_M;
           state.lab_state |= LS_CLEANING_1_M;
+          start_cleaning_1();
           clean_time = millis();
         }
-        record_state();
       }
-//      static unsigned long clean_time;
-//      if (!(state.lab_state & LS_CLEANED_M)) {
-//        if (stage == 1) {
-//          if (!stage_started) {
-//            if (step == 3) {
-//              state.lab_state |= LS_CLEANING_3_M;
-//              state.lab_state &= ~LS_CLEANING_2_M;
-//            } else if (step == 5) {
-//              state.lab_state |= LS_CLEANING_5_M;
-//              state.lab_state &= ~LS_CLEANING_4_M;
-//            }
-//            record_state();
-//            log_msg(state.last_blue_time, "clean_stage_1");
-//            digitalWrite(SOL_2, LOW);
-//            digitalWrite(SOL_3, LOW);
-//                           
-//            // run p2
-//            digitalWrite(PUMP_POWER, LOW);
-//            digitalWrite(PUMP_2, HIGH);
-//            loop_time = millis();
-//            stage_started = true;
-//          }
-//          
-//          if (millis() - loop_time >= STAGE_1_LENGTH) {
-//            loop_time = 0L;
-//            
-//            // turn everything off
-//            digitalWrite(PUMP_POWER, HIGH);
-//            digitalWrite(PUMP_2, LOW);
-//            digitalWrite(SOL_2, HIGH);
-//            digitalWrite(SOL_3, HIGH);
-//            if (step == 5) {
-//              // update and record state
-//              state.lab_state &= ~LS_CLEANING_5_M;
-//              state.lab_state |= LS_CLEANED_M | LS_IDLING_M;
-//              record_state();
-//              
-//              log_msg(state.last_blue_time, "!cleaning");
-//              
-//              log_msg(state.last_blue_time, "clean->idle");
-//    
-//              // close streams
-//              log_file.close();
-//              SD.remove(STATE_FILE_PATH);
-//            } else {
-//              stage = 2;
-//              step++;
-//              stage_started = false;
-//            }
-//          }
-//        } else if (stage == 2) {
-//          if (!stage_started) {
-//            if (step == 2) {
-//              state.lab_state &= ~LS_CLEANING_1_M;
-//              state.lab_state |= LS_CLEANING_2_M; 
-//            } else if (step == 4) {
-//              state.lab_state &= ~LS_CLEANING_3_M;
-//              state.lab_state |= LS_CLEANING_4_M;
-//            }
-//            record_state();
-//            log_msg(state.last_blue_time, "clean_stage_2");
-//            digitalWrite(SOL_1, LOW);
-//            digitalWrite(SOL_3, LOW);
-//            
-//            // run p1
-//            digitalWrite(PUMP_POWER, LOW);
-//            digitalWrite(PUMP_1, HIGH);
-//            loop_time = millis();
-//            stage_started = true;
-//          }
-//          
-//          if (millis() - loop_time >= STAGE_2_LENGTH) {
-//            loop_time = 0;
-//            stage_started = false;
-//            step++;
-//            stage = 1;
-//            
-//            // turn everything off
-//            digitalWrite(PUMP_POWER, HIGH);
-//            digitalWrite(PUMP_1, LOW);
-//            
-//            digitalWrite(SOL_1, HIGH);
-//            digitalWrite(SOL_3, HIGH);
-//          }
-//        } 
-//      }
     }
     break;
 
@@ -509,118 +639,4 @@ void loop() {
   // assign last state now so that we can capture
   // any updates to state on next loop
   state.last_blue_state = state.blue_state;
-}
-
-void restore_state() {
-  #ifndef DEBUG
-  File state_file = SD.open(STATE_FILE_PATH, FILE_READ);
-  if (state_file.peek() > -1) {
-    // read state data
-    state.lab_state = state_file.read();
-    state_file.read();  // consume delimiter
-    state.last_state = state_file.read();
-    state_file.read();  // consume delimiter
-    state.blue_state = state_file.read();
-  } else {
-    LOG_MSG_LN("!state_data");
-  }
-  state_file.close();
-  SD.remove(STATE_FILE_PATH);
-  #endif
-}
-
-void record_state() {
-  #ifndef DEBUG
-  if (SD.exists(STATE_FILE_PATH)) {
-    SD.remove(STATE_FILE_PATH);
-  }
-  // record:
-  //  magic number (first 2 bytes)
-  //  last blue time (precisely 4 bytes (float))
-  //  last blue state (1 byte (ASCII char)
-  //  last lab state (1 byte (between 1 and 11)
-
-  File state_file = SD.open(STATE_FILE_PATH, FILE_WRITE);
-  // write dummy 2 bytes
-  state_file.print((uint16_t) 0);
-
-  // begin writing real state data
-  state_file.print(state.lab_state);
-  state_file.print(DELIMITER);
-  state_file.print(state.last_state);
-  state_file.print(DELIMITER);
-  state_file.print(state.blue_state);
-  state_file.println(DELIMITER);
-  state_file.close();
-  #endif
-}
-
-void read_serial_input() {
-  // according to NRFF Toolbox, need to wait
-  // 17 ms for frame to finish transmission
-  int fields_read = 0;
-  char *fields[NUM_FIELDS];
-  char buf[MAX_FRAME_SIZE + 1];
-  size_t bytes = Serial.readBytes(buf, MAX_FRAME_SIZE);
-  buf[bytes] = '\0';
-
-  // process the frame
-  char * ptr;
-  ptr = strtok(buf, ",");
-  int i = 0;
-  while (ptr != NULL) {
-    fields[i] = ptr;
-    ptr = strtok(NULL, ",");
-    i++;
-  }
-
-  // extract what we care about
-  state.blue_state = fields[0][0];
-  state.last_blue_time = atof(fields[1]);
-  // TODO: expand this list?
-}
-
-void read_sensors(EnvDataPtr env_data_ptr) {
-  env_data_ptr->curr_data = (float) analogRead(CURR_ANALOG_PIN) * (V_REF / 1023.0) / CURR_GAIN_CONSTANT;
-  env_data_ptr->volt_data = V_REF - (float) analogRead(VOLT_ANALOG_PIN) * (V_REF / 1023.0);
-  env_data_ptr->temp_data = (float) analogRead(TEMP_ANALOG_PIN) * (V_REF / 1023.0) * 100;
-}
-
-void log_sensor_data(const EnvDataPtr env_data_ptr, File data_file) {
-  // convert sensor values to strings
-  char s_volt[10];
-  char s_curr[10];
-  char s_temp[10];
-  dtostrf(env_data_ptr->volt_data, 5, 3, s_volt);
-  dtostrf(env_data_ptr->curr_data, 5, 3, s_curr);
-  dtostrf(env_data_ptr->temp_data, 5, 3, s_temp);
-
-  // write sensor data to data file
-  #ifdef DEBUG
-  LOG_MSG(state.last_blue_time);
-  LOG_MSG(DELIMITER);
-  LOG_MSG(s_volt);
-  LOG_MSG(DELIMITER);
-  LOG_MSG(s_curr);
-  LOG_MSG(DELIMITER);
-  LOG_MSG_LN(s_temp);
-  #else
-  data_file.print(state.last_blue_time);
-  data_file.print(DELIMITER);
-  data_file.print(s_volt);
-  data_file.print(DELIMITER);
-  data_file.print(s_curr);
-  data_file.print(DELIMITER);
-  data_file.println(s_temp);
-  #endif
-}
-
-void log_msg(const float t, const char* msg) {
-  LOG_MSG(t);
-  LOG_MSG(DELIMITER);
-  LOG_MSG_LN(msg);
-}
-
-bool check_lab_state(const uint16_t &mask) {
-  return (state.lab_state & mask);
 }
