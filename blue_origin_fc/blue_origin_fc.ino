@@ -41,6 +41,9 @@
 // Sensor gain constants
 #define CURR_GAIN_CONSTANT 68.4
 
+// reference voltage
+#define V_REF 1.1
+
 // how long (in ms) it takes to prime the experiment
 #define PRIME_TIME 1000
 
@@ -104,9 +107,8 @@
 #define LS_CLEANING_5_M  0x0200  // 1 << 9, implies PRIMED, PLATED
 #define LS_CLEANED_M     0x0400  // 1 << 10, implies PRIMED, PLATED, CLEANING 1-5
 
+// used to verify that a write was successful
 #define MAGIC_NUMBER 0x451b
-
-#define V_REF 1.1
 
 // typedefs
 
@@ -126,41 +128,6 @@ typedef struct state_st {
 } State;
 
 // end typedefs
-
-
-// function prototypes
-
-// intializes serial interface
-void serial_init();
-
-// initializes SD card interface
-void sd_init();
-
-// configures pins on which pumps, 
-// the experiment and the sensors are driven
-void pin_init();
-
-// takes current, voltage, and temperature
-// measurements and stores them in the EnvData
-// struct at EnvDataPtr
-void read_sensors(EnvDataPtr env_data_ptr);
-
-// writes data to data_file in comma-separated
-// format
-void log_sensor_data(const EnvDataPtr env_data_ptr, File data_file);
-
-// log message to logging system
-void log_msg(const float t, const char* msg);
-
-// records the state to a state file
-// and prints to the active logging system
-// that a state transition has occurred
-void record_state();
-
-// restores the state from the state file
-void restore_state();
-
-// end function prototypes
 
 
 // global variables
@@ -329,7 +296,7 @@ void read_serial_input() {
 }
 
 // poll sensors for current environmental data. Stores results
-// in pointer to an EnvData struct
+// in EnvData struct at env_data_ptr
 void read_sensors(EnvDataPtr env_data_ptr) {
   env_data_ptr->curr_data = (float) analogRead(CURR_ANALOG_PIN) * (V_REF / 1023.0) / CURR_GAIN_CONSTANT;
   env_data_ptr->volt_data = V_REF - (float) analogRead(VOLT_ANALOG_PIN) * (V_REF / 1023.0);
