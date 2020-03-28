@@ -39,13 +39,13 @@
 #define EXPERIMENT A5
 
 // Sensor gain constants
-#define CURR_GAIN_CONSTANT 68.4
+#define CURR_GAIN_CONSTANT 68.4f
 
 // reference voltage
-#define V_REF 1.1
+#define V_REF 1.1f
 
 // how long (in ms) it takes to prime the experiment
-#define PRIME_TIME 1000
+#define PRIME_TIME 3000
 
 // how long (in ms) to wait before priming
 #define PRIME_WAIT_TIME 1000
@@ -56,21 +56,17 @@
 // how long (in ms) it takes to finish stage 2
 #define STAGE_2_LENGTH 1000
 
-// how long to wait before taking another measurement
-#define LOG_TIME_CUTOFF 500
+// how long to wait before taking another measurement (ms)
+#define LOG_TIME_CUTOFF 250
+
+// how long to listen on the serial line for new data (ms)
+#define SERIAL_TIMEOUT 20
 
 // data packet information
 #define MAX_FRAME_SIZE 250
 #define MAX_FIELD_SIZE 20
 #define NUM_FIELDS 21
 #define DELIMITER ','
-
-// possible states for our cubesat
-#define LS_NO_STATE 0
-#define LS_IDLE 1
-#define LS_PRIME_EXPERIMENT 2
-#define LS_CELL_PLATING 3
-#define LS_CLEAN_UP 4
 
 // file names for logging, keeping track of state, etc.
 #define LOG_FILE_PATH "log.txt"
@@ -117,7 +113,7 @@ typedef struct env_data_st {
   float volt_data;
   float curr_data;
   float temp_data;
-} EnvData, *EnvDataPtr;
+} EnvData;
 
 // encapsulates state information
 typedef struct state_st {
@@ -125,7 +121,7 @@ typedef struct state_st {
   uint16_t lab_state;
   char blue_state;
   char last_blue_state;
-} State;
+} LabState;
 
 // end typedefs
 
@@ -134,7 +130,7 @@ typedef struct state_st {
 
 // contains information about the flight state of MiniMEE
 // and New Shepard
-State state;
+LabState state;
 
 // acts as record of events during flight
 File log_file;
@@ -150,11 +146,11 @@ File data_file;
 #define DEBUG
 
 #ifdef DEBUG
-#define LOG_MSG(x) Serial.print(x)
-#define LOG_MSG_LN(x) Serial.println(x)
+  #define LOG_MSG(x) Serial.print(x)
+  #define LOG_MSG_LN(x) Serial.println(x)
 #else
-#define LOG_MSG(x) log_file.print(x)
-#define LOG_MSG_LN(x) log_file.println(x)
+  #define LOG_MSG(x) log_file.print(x)
+  #define LOG_MSG_LN(x) log_file.println(x)
 #endif
 
 // end debug macros
@@ -163,7 +159,7 @@ File data_file;
 void serial_init() {
   Serial.begin(115200, SERIAL_8N1);
   while (!Serial);
-  Serial.setTimeout(20);  // ensures that we capture every packet
+  Serial.setTimeout(SERIAL_TIMEOUT);  // ensures that we capture every packet
   log_msg(0.0f, "Serial");
 }
 
@@ -179,7 +175,7 @@ void sd_init() {
 
 // initialize pin 
 void pin_init() {
-  // nominally, this should be 1.1V
+  // nominally, this is 1.1V (and won't change much)
   analogReference(INTERNAL);
 
   // initialize pump pins
@@ -226,6 +222,10 @@ void pin_init() {
 void restore_state() {
   #ifndef DEBUG
   File state_file = SD.open(STATE_FILE_PATH, FILE_READ);
+  // first, attempt to read the magic number (little-endian)
+  uint16_t magic = 0;
+  
+  state_file.read()
   if (state_file.peek() > -1) {
     // read state data
     state.lab_state = state_file.read();
@@ -254,8 +254,7 @@ void record_state() {
   //  last lab state (1 byte (between 1 and 11)
 
   File state_file = SD.open(STATE_FILE_PATH, FILE_WRITE);
-  // write dummy 2 bytes
-  state_file.print((uint16_t) 0);
+  state_file.write(
 
   // begin writing real state data
   state_file.print(state.lab_state);
@@ -271,8 +270,6 @@ void record_state() {
 // attempts to read a new serial packet from the 
 // featherframe serial interface. 
 void read_serial_input() {
-  // according to NRFF Toolbox, need to wait
-  // 17 ms for frame to finish transmission
   int fields_read = 0;
   char *fields[NUM_FIELDS];
   char buf[MAX_FRAME_SIZE + 1];
@@ -296,47 +293,47 @@ void read_serial_input() {
 }
 
 // poll sensors for current environmental data. Stores results
-// in EnvData struct at env_data_ptr
-void read_sensors(EnvDataPtr env_data_ptr) {
-  env_data_ptr->curr_data = (float) analogRead(CURR_ANALOG_PIN) * (V_REF / 1023.0) / CURR_GAIN_CONSTANT;
-  env_data_ptr->volt_data = V_REF - (float) analogRead(VOLT_ANALOG_PIN) * (V_REF / 1023.0);
-  env_data_ptr->temp_data = (float) analogRead(TEMP_ANALOG_PIN) * (V_REF / 1023.0) * 100;
+// in EnvData struct env_data
+void read_sensors(EnvData &env_data) {
+  env_data.curr_data = static_cast<float>(analogRead(CURR_ANALOG_PIN) * (V_REF / 1023.0) / CURR_GAIN_CONSTANT);
+  env_data.volt_data = V_REF - static_cast<float>(analogRead(VOLT_ANALOG_PIN) * (V_REF / 1023.0));
+  env_data.temp_data = static_cast<float>(analogRead(TEMP_ANALOG_PIN) * (V_REF / 1023.0) * 100);
 }
 
 // write polled sensor data to file
-void log_sensor_data(const EnvDataPtr env_data_ptr, File data_file) {
+void log_sensor_data(const EnvData &env_data, File data_file) {
   // convert sensor values to strings
   char s_volt[10];
   char s_curr[10];
   char s_temp[10];
-  dtostrf(env_data_ptr->volt_data, 5, 3, s_volt);
-  dtostrf(env_data_ptr->curr_data, 5, 3, s_curr);
-  dtostrf(env_data_ptr->temp_data, 5, 3, s_temp);
+  dtostrf(env_data.volt_data, 5, 3, s_volt);
+  dtostrf(env_data.curr_data, 5, 3, s_curr);
+  dtostrf(env_data.temp_data, 5, 3, s_temp);
 
   // write sensor data to data file
   #ifdef DEBUG
-  LOG_MSG(state.last_blue_time);
-  LOG_MSG(DELIMITER);
-  LOG_MSG(s_volt);
-  LOG_MSG(DELIMITER);
-  LOG_MSG(s_curr);
-  LOG_MSG(DELIMITER);
-  LOG_MSG_LN(s_temp);
+    LOG_MSG(state.last_blue_time);
+    LOG_MSG(DELIMITER);
+    LOG_MSG(s_volt);
+    LOG_MSG(DELIMITER);
+    LOG_MSG(s_curr);
+    LOG_MSG(DELIMITER);
+    LOG_MSG_LN(s_temp);
   #else
-  data_file.print(state.last_blue_time);
-  data_file.print(DELIMITER);
-  data_file.print(s_volt);
-  data_file.print(DELIMITER);
-  data_file.print(s_curr);
-  data_file.print(DELIMITER);
-  data_file.println(s_temp);
-  #endif
+    data_file.print(state.last_blue_time);
+    data_file.print(DELIMITER);
+    data_file.print(s_volt);
+    data_file.print(DELIMITER);
+    data_file.print(s_curr);
+    data_file.print(DELIMITER);
+    data_file.println(s_temp);
+  #endif    // DEBUG
 }
 
 // write a message to the log file at time t
 void log_msg(const float t, const char* msg) {
   LOG_MSG(t);
-  LOG_MSG(DELIMITER);
+  LOG_MSG(": ");
   LOG_MSG_LN(msg);
 }
 
@@ -345,46 +342,56 @@ bool check_lab_state(const uint16_t &mask) {
   return (state.lab_state & mask);
 }
 
-// start the first cleaning step
-void start_cleaning_1() {
-  log_msg(state.last_blue_time, "clean1");
-  digitalWrite(SOL_2, LOW);
-  digitalWrite(SOL_3, LOW);
-                 
-  // run p2
-  digitalWrite(PUMP_POWER, LOW);
-  digitalWrite(PUMP_2, HIGH);
+// starts cleaning step specified by i
+void start_cleaning(uint8_t i) {
+  if (i == 1) {
+    digitalWrite(SOL_2, LOW);
+    digitalWrite(SOL_3, LOW);
+                   
+    // run p2
+    digitalWrite(PUMP_POWER, LOW);
+    digitalWrite(PUMP_2, HIGH);
+    log_msg(state.last_blue_time, "clean1");
+  } else if (i == 2) {
+    digitalWrite(SOL_1, LOW);
+    digitalWrite(SOL_3, LOW);
+  
+    // run p1
+    digitalWrite(PUMP_POWER, LOW);
+    digitalWrite(PUMP_1, HIGH);
+    log_msg(state.last_blue_time, "clean2");
+  } else {
+    log_msg(state.last_blue_time, "invalid cleaning step");
+  }
 }
 
-// stop the first cleaning step
-void stop_cleaning_1() {
-  digitalWrite(SOL_2, HIGH);
-  digitalWrite(SOL_3, HIGH);
-                 
-  // run p2
-  digitalWrite(PUMP_POWER, HIGH);
-  digitalWrite(PUMP_2, LOW);
+// stops cleaning step specified by i
+void stop_cleaning(uint8_t i) {
+  if (i == 1) {
+    digitalWrite(SOL_2, HIGH);
+    digitalWrite(SOL_3, HIGH);
+                   
+    // run p2
+    digitalWrite(PUMP_POWER, HIGH);
+    digitalWrite(PUMP_2, LOW);
+    log_msg(state.last_blue_time, "!clean1");
+  } else if (i == 2) {
+    digitalWrite(SOL_1, HIGH);
+    digitalWrite(SOL_3, HIGH);
+  
+    // run p1
+    digitalWrite(PUMP_POWER, HIGH);
+    digitalWrite(PUMP_1, LOW);
+    log_msg(state.last_blue_time, "!clean2");
+  } else {
+    log_msg(state.last_blue_time, "invalid cleaning step");
+  }
 }
 
-// start the second cleaning step
-void start_cleaning_2() {
-  log_msg(state.last_blue_time, "clean2");
-  digitalWrite(SOL_1, LOW);
-  digitalWrite(SOL_3, LOW);
-
-  // run p1
-  digitalWrite(PUMP_POWER, LOW);
-  digitalWrite(PUMP_1, HIGH);
-}
-
-// stop the second cleaning step
-void stop_cleaning_2() {
-  digitalWrite(SOL_1, HIGH);
-  digitalWrite(SOL_3, HIGH);
-
-  // run p1
-  digitalWrite(PUMP_POWER, HIGH);
-  digitalWrite(PUMP_1, LOW);
+// determines if we can start priming. returns true if so, false otherwise
+bool sep_cmd_wait() {
+  static unsigned long sep_cmd_time = millis();
+  return (millis() - sep_cmd_time >= PRIME_WAIT_TIME);
 }
 
 // configures and initializes serial, sd,
@@ -392,11 +399,11 @@ void stop_cleaning_2() {
 void setup() {
   // need serial line configured first if debugging
   #ifdef DEBUG
-  serial_init();
-  sd_init();
+    serial_init();
+    sd_init();
   #else
-  sd_init();
-  serial_init();
+    sd_init();
+    serial_init();
   #endif
 
   // determine if we need to read last state
@@ -422,6 +429,7 @@ void loop() {
     read_serial_input();
   }
 
+  // check to see if blue's state updated when we read
   if (state.blue_state != state.last_blue_state) {
     record_state();
   }
@@ -432,12 +440,12 @@ void loop() {
     {
       // have we already primed?
       if (!check_lab_state(LS_PRIMED_M)) {
+        
         // wait until things have settled down
-        static unsigned long sep_cmd_time = millis();
-        if (millis() - sep_cmd_time < PRIME_WAIT_TIME) {
+        if (!sep_cmd_wait())
           break;
-        }
-
+          
+        // 
         static unsigned long prime_start_time;
         if (!check_lab_state(LS_PRIMING_M)) {
           // start priming
@@ -487,8 +495,8 @@ void loop() {
         } else if (millis() - logging_time >= LOG_TIME_CUTOFF) {
           // take a measurement
           EnvData env_data;
-          read_sensors(&env_data);
-          log_sensor_data(&env_data, data_file);
+          read_sensors(env_data);
+          log_sensor_data(env_data, data_file);
           logging_time = millis();
         }
       } else {
@@ -528,8 +536,8 @@ void loop() {
           if (millis() - clean_time >= STAGE_1_LENGTH) {
             state.lab_state &= ~LS_CLEANING_1_M;
             state.lab_state |= LS_CLEANING_2_M;
-            stop_cleaning_1();
-            start_cleaning_2();
+            stop_cleaning(1);
+            start_cleaning(2);
             clean_time = millis();
           }
           // cleaning_step_1();
@@ -538,8 +546,8 @@ void loop() {
           if (millis() - clean_time >= STAGE_2_LENGTH) {
             state.lab_state &= ~LS_CLEANING_2_M;
             state.lab_state |= LS_CLEANING_3_M;
-            stop_cleaning_2();
-            start_cleaning_1();
+            stop_cleaning(2);
+            start_cleaning(1);
             clean_time = millis();
           }
         } else if (check_lab_state(LS_CLEANING_3_M)) {
@@ -547,8 +555,8 @@ void loop() {
           if (millis() - clean_time >= STAGE_1_LENGTH) {
             state.lab_state &= ~LS_CLEANING_3_M;
             state.lab_state |= LS_CLEANING_4_M;
-            stop_cleaning_1();
-            start_cleaning_2();
+            stop_cleaning(1);
+            start_cleaning(2);
             clean_time = millis();
           }
         } else if (check_lab_state(LS_CLEANING_4_M)) {
@@ -556,8 +564,8 @@ void loop() {
           if (millis() - clean_time >= STAGE_2_LENGTH) {
             state.lab_state &= ~LS_CLEANING_4_M;
             state.lab_state |= LS_CLEANING_5_M;
-            stop_cleaning_2();
-            start_cleaning_1();
+            stop_cleaning(2);
+            start_cleaning(1);
             clean_time = millis();
           }
         } else if (check_lab_state(LS_CLEANING_5_M)) {
@@ -565,7 +573,7 @@ void loop() {
           if (millis() - clean_time >= STAGE_1_LENGTH) {
             state.lab_state &= ~LS_CLEANING_5_M;
             state.lab_state |= LS_CLEANED_M | LS_IDLING_M;
-            stop_cleaning_1();
+            stop_cleaning(1);
             record_state();
 
             // clean up whole lab
@@ -581,7 +589,7 @@ void loop() {
           // we haven't done any cleaning yet
           state.lab_state &= ~LS_IDLING_M;
           state.lab_state |= LS_CLEANING_1_M;
-          start_cleaning_1();
+          start_cleaning(1);
           clean_time = millis();
         }
       }
