@@ -143,7 +143,7 @@ File data_file;
 
 // debug macros
 
-#define DEBUG
+// #define DEBUG
 
 #ifdef DEBUG
   #define LOG_MSG(x) Serial.print(x)
@@ -222,15 +222,9 @@ void pin_init() {
 void restore_state() {
   #ifndef DEBUG
   File state_file = SD.open(STATE_FILE_PATH, FILE_READ);
-  // first, attempt to read the magic number (little-endian)
-  uint16_t magic = 0;
-  
-  state_file.read()
   if (state_file.peek() > -1) {
     // read state data
     state.lab_state = state_file.read();
-    state_file.read();  // consume delimiter
-    state.last_state = state_file.read();
     state_file.read();  // consume delimiter
     state.blue_state = state_file.read();
   } else {
@@ -254,12 +248,9 @@ void record_state() {
   //  last lab state (1 byte (between 1 and 11)
 
   File state_file = SD.open(STATE_FILE_PATH, FILE_WRITE);
-  state_file.write(
 
   // begin writing real state data
   state_file.print(state.lab_state);
-  state_file.print(DELIMITER);
-  state_file.print(state.last_state);
   state_file.print(DELIMITER);
   state_file.print(state.blue_state);
   state_file.println(DELIMITER);
