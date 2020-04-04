@@ -14,23 +14,25 @@
 #include <simavr/avr_spi.h>
 
 #include "sd.h"
-#include "uart_pty.h"
 
 #define FREQ 16000000
 
 sd_t sd;
-uart_pty_t uart_pty;
+avr_t *avr;
 
-void uart_hook(avr_irq_t *irq, uint32_t value, void *param) {
-	puts("UART!!");
-}
+char buffer[256];
+unsigned char buffer_idx = 0;
 
-void sigint_handler(int sig) {
-	fputs("Saving SD card to disk...", stderr);
-	sd_free(&sd);
-	uart_pty_stop(&uart_pty);
-	fputs("Exiting cleanly!", stderr);
-	exit(0);
+static void sigint_handler(int sig) {
+	printf("> ");
+	scanf("%s", buffer);
+	buffer_idx = 0;
+	if (strcmp(buffer, "quit") == 0) {
+		fputs("Saving SD card to disk...", stderr);
+		sd_free(&sd);
+		fputs("Exiting cleanly!", stderr);
+		exit(0);
+	}
 }
 
 const struct sigaction sigint_action = {
@@ -47,7 +49,6 @@ int main(int argc, char **argv) {
 	}
 
 	/////// LOAD FIRMWARE
-	avr_t *avr;
 	elf_firmware_t firmware;
 	if (elf_read_firmware(argv[1], &firmware)) {
 		fputs("Error reading firmware elf.", stderr);
@@ -78,19 +79,24 @@ int main(int argc, char **argv) {
 		sd.irq + SD_IRQ_CS);
 
 	/////// INITIALIZE UART_PTY
-	uart_pty_init(avr, &uart_pty);
-	uart_pty_connect(&uart_pty, '0');
+	/* uart_pty_init(avr, &uart_pty); */
+	/* uart_pty_connect(&uart_pty, '0'); */
 
 	/////// CATCH SIGNALS
 	sigaction(SIGINT, &sigint_action, NULL);
 	sigaction(SIGTERM, &sigint_action, NULL);
 
 	/////// RUN SIM
-	puts("Starting in 3...");
+	puts("About to start");
 	// give time for xterm and picocom to start
-	sleep(3);
+	sleep(1);
 	unsigned long cycles_run = 0;
+	buffer[0] = '\0';
 	while (1) {
+		if (buffer[buffer_idx] != '\0' && cycles_run % 1000000 == 0) {
+			avr_raise_irq(avr_io_getirq(avr, AVR_IOCTL_UART_GETIRQ('0'), UART_IRQ_INPUT), buffer[buffer_idx]);
+			buffer_idx++;
+		}
 		int state = avr_run(avr);
 		if (state == cpu_Done) {
 			fputs("CPU stopped gracefully.", stderr);
@@ -102,11 +108,6 @@ int main(int argc, char **argv) {
 		}
 		if (cycles_run++ % FREQ == 0) {
 			fprintf(stderr, "seconds: %lu\n", cycles_run / FREQ);
-		}
-		if (cycles_run == FREQ * 3) {
-			avr_raise_irq(avr_io_getirq(avr, AVR_IOCTL_UART_GETIRQ('0'), UART_IRQ_INPUT), 'C');
-			avr_raise_irq(avr_io_getirq(avr, AVR_IOCTL_UART_GETIRQ('0'), UART_IRQ_INPUT), '\r');
-			avr_raise_irq(avr_io_getirq(avr, AVR_IOCTL_UART_GETIRQ('0'), UART_IRQ_INPUT), '\n');
 		}
 	}
 }
