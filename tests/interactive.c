@@ -107,8 +107,9 @@ int main(int argc, char **argv) {
 	}
 
 	avr = avr_make_mcu_by_name("atmega328p");
-	avr->frequency = FREQ;
 	avr_init(avr);
+	avr->frequency = FREQ;
+	avr->log = LOG_WARNING;
 	avr_load_firmware(avr, &firmware);
 
 	/////// INITIALIZE SD CARD
