@@ -11,7 +11,7 @@ $(sketch_elf): $(sketch)/$(sketch).ino
 	arduino-cli compile -b 'arduino:avr:uno' $(sketch)
 
 $(interactive): $(interactive).o $(int_libs)
-	$(CC) $(CFLAGS) -o $@ -lsimavr -lelf -lutil -pthread \
+	$(CC) $(CFLAGS) -o $@ -lsimavr -lelf \
 		$(interactive).o $(int_libs)
 
 clean:
