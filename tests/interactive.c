@@ -10,6 +10,7 @@
 
 #include <simavr/sim_avr.h>
 #include <simavr/avr_uart.h>
+#include <simavr/avr_adc.h>
 #include <simavr/sim_elf.h>
 #include <simavr/avr_ioport.h>
 #include <simavr/avr_spi.h>
@@ -17,6 +18,7 @@
 #include "sd.h"
 
 #define FREQ 16000000
+#define CURRENT_GAIN 15.15f
 
 sd_t sd;
 avr_t *avr;
@@ -49,19 +51,31 @@ static void sigint_handler(int sig) {
 
 	double voltage;
 	if (sscanf(buffer, "voltage=%lf", &voltage)) {
-		// TODO: set voltage
-		printf("TODO: Set voltage to %f\n", voltage);
+		// measured voltage = (5 - voltage_across_experiment) / 5
+		// equivalently: (1 - voltage_across_experiment/5)
+		uint32_t measured_voltage = (uint32_t)(1000 - voltage * 200);
+		avr_raise_irq(avr_io_getirq(avr, AVR_IOCTL_ADC_GETIRQ, ADC_IRQ_ADC2),
+			      measured_voltage);
+		fprintf(stderr, "Set A2 to %u mV\n", measured_voltage);
 		return;
 	}
 
 	double current;
 	if (sscanf(buffer, "current=%lf", &current)) {
-		printf("TODO: Set current to %f\n", current);
+		uint32_t measured_voltage = (uint32_t)(CURRENT_GAIN * current * 1000.0);
+		avr_raise_irq(avr_io_getirq(avr, AVR_IOCTL_ADC_GETIRQ, ADC_IRQ_ADC3),
+			      measured_voltage);
+		fprintf(stderr, "Set A3 to %u mV\n", measured_voltage);
+		return;
 	}
 
 	int temperature;
 	if (sscanf(buffer, "temperature=%d", &temperature)) {
-		printf("TODO: Set temperature to %d\n", temperature);
+		uint32_t measured_voltage = temperature * 10;
+		avr_raise_irq(avr_io_getirq(avr, AVR_IOCTL_ADC_GETIRQ, ADC_IRQ_ADC1),
+			      measured_voltage);
+		fprintf(stderr, "Set A1 to %u mV\n", measured_voltage);
+		return;
 	}
 
 	for (int i = 0; buffer[i] != '\0'; i++) {
