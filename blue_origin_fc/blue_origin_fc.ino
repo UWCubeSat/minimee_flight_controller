@@ -1,24 +1,13 @@
-// Eli Reed (sailedeer)
+// Copyright Eli Reed (sailedeer), released under GPLv3
 // November 18th, 2019
 // 
 // Flight controller for MiniMEE mission. Maintains state of
 // payload, facilitates communication with New Shepard,
 // and controls experimentation. 
 
-// Blue Serial Connection Spec:
-// Baud Rate: 115200
-// Data: 8 bits |
-// Parity: None |--> 8N1
-// Stop Bits: 1 |
-// 
-// Packets are ASCII string of 21 comma-separated values
-// size of packets <= 250 bytes (buffer is 256 bytes), 
-// individual fields will never exceed 20 bytes. Data
-// stream starts approximately one minute after nano-labs are powered up
-// Data stream will close approximately five minutes after landing. 
+// Bonk Rewrite, September 20, 2020
 
-#include <SPI.h>  // required for SD library
-#include <SD.h>   // exposes functions for writing to/reading from SD card
+#include <BonkFramework.h>
 
 // pin configuration macros
 #define CHIP_SELECT A0
@@ -38,12 +27,6 @@
 
 #define EXPERIMENT A5
 
-// Sensor gain constants
-#define CURR_GAIN_CONSTANT 68.4f
-
-// reference voltage
-#define V_REF 1.1f
-
 // how long (in ms) it takes to prime the experiment
 #define PRIME_TIME 3000
 
@@ -56,55 +39,10 @@
 // how long (in ms) it takes to finish stage 2
 #define STAGE_2_LENGTH 1000
 
-// how long to wait before taking another measurement (ms)
-#define LOG_TIME_CUTOFF 250
-
-// how long to listen on the serial line for new data (ms)
-#define SERIAL_TIMEOUT 20
-
-// data packet information
-#define MAX_FRAME_SIZE 250
-#define MAX_FIELD_SIZE 20
-#define NUM_FIELDS 21
-#define DELIMITER ','
-
 // file names for logging, keeping track of state, etc.
 #define LOG_FILE_PATH "log.txt"
 #define STATE_FILE_PATH "state.txt"
 #define DATA_FILE_PATH "data.txt"
-
-// possible states for the blue rocket
-#define BS_NO_STATE '@'
-#define BS_ABORT_ENABLED 'A'
-#define BS_ABORT_COMMANDED 'B'
-#define BS_LIFTOFF 'C'
-#define BS_MECO 'D'
-#define BS_SEP_COMMANDED 'E'
-#define BS_COAST_START 'F'
-#define BS_APOGEE 'G'
-#define BS_COAST_END 'H'
-#define BS_DROGUE_DEPLOY 'I'
-#define BS_MAIN_CHUTE_DEPLOY 'J'
-#define BS_LANDING 'K'
-#define BS_SAFING 'L'
-#define BS_MISSION_END 'M'
-
-// bit masks for stage
-#define LS_NO_STATE      0x0000
-#define LS_IDLING_M      0x0001  // 1 << 0
-#define LS_PRIMING_M     0x0002  // 1 << 1
-#define LS_PRIMED_M      0x0004  // 1 << 2
-#define LS_PLATING_M     0x0008  // 1 << 3, implies PRIMED
-#define LS_PLATED_M      0x0010  // 1 << 4, implies PRIMED
-#define LS_CLEANING_1_M  0x0020  // 1 << 5, implies PRIMED, PLATED
-#define LS_CLEANING_2_M  0x0040  // 1 << 6, implies PRIMED, PLATED
-#define LS_CLEANING_3_M  0x0080  // 1 << 7, implies PRIMED, PLATED
-#define LS_CLEANING_4_M  0x0100  // 1 << 8, implies PRIMED, PLATED
-#define LS_CLEANING_5_M  0x0200  // 1 << 9, implies PRIMED, PLATED
-#define LS_CLEANED_M     0x0400  // 1 << 10, implies PRIMED, PLATED, CLEANING 1-5
-
-// used to verify that a write was successful
-#define MAGIC_NUMBER 0x451b
 
 // typedefs
 
