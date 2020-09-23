@@ -76,6 +76,12 @@ typedef struct __attribute__((packed)) state_st {
 
 // end typedefs
 
+#ifdef DEBUG_MODE
+#define NOTIFY DEBUG
+#define WARNING DEBUG
+#define ERROR DEBUG
+#endif  // DEBUG
+
 // global variables
 
 Bonk::StateManager<LabState> sm;
@@ -110,11 +116,11 @@ class MiniEventHandler : public Bonk::EventHandler {
         if (!state.priming) {
           // start priming
           state.priming = true;
-
           state.motor = true;
           containmentPins.digitalWrite(MOTOR, LOW)
           prime_start_time = millis();
           sm.set_state(state);
+          lm.log(Bonk::LogType::NOTIFY, "priming");
         } else if (millis() - prime_start_time >= PRIME_TIME) {
           // stop priming
           state.priming = false;
@@ -122,6 +128,7 @@ class MiniEventHandler : public Bonk::EventHandler {
           containmentPins.digitalWrite(MOTOR, HIGH);
           state.primed = true;
           sm.set_state(state);
+          lm.log(Bonk::LogType::NOTIFY, "primed");
         }
       }
     }
@@ -136,6 +143,7 @@ class MiniEventHandler : public Bonk::EventHandler {
           containmentPins.digitalWrite(EXPERIMENT, HIGH)
           logging_time = millis();
           sm.set_state(state);
+          lm.log(Bonk::LogType::NOTIFY, "plating");
         } else if (millis() - logging_time >= LOG_TIME_CUTOFF) {
           // take a measurement
           EnvData env_data;
@@ -144,7 +152,7 @@ class MiniEventHandler : public Bonk::EventHandler {
           logging_time = millis();
         }
       } else {
-        // TODO: modularize priming
+        onSeparationCommanded();
       }
     }
 
@@ -154,10 +162,10 @@ class MiniEventHandler : public Bonk::EventHandler {
 
     void onCoastEnd() const {
       if (state.experiment) {
-        // TODO: stop the experiment
         containmentPins.digitalWrite(EXPERIMENT, HIGH);
         state.experiment = false;
         sm.set_state(state);
+        lm.log(Bonk::LogType::NOTIFY, "finished plating");
       }
     }
 
@@ -185,6 +193,8 @@ class MiniEventHandler : public Bonk::EventHandler {
         }
         state.clean_step++;
         sm.set_state(state);
+        String msg = "cleaning step " + state.clean_step;
+        lm.log(Bonk::LogType::NOTIFY, msg);
       }
     }
 
@@ -306,6 +316,8 @@ void pin_init() {
   containmentPins.digitalWrite(SOL_3, HIGH);
   containmentPins.digitalWrite(MOTOR, HIGH);
   containmentPins.digitalWrite(EXPERIMENT, HIGH);
+
+  lm.log(Bonk::LogType::NOTIFY, "pins initialized");
 }
 
 // configures and initializes serial, sd,
@@ -335,6 +347,7 @@ void setup() {
   #endif  // BONK_BOOST
   
   // configure pins
+  lm.log(Bonk::LogType::NOTIFY, "BONK initialized");
   pin_init();
 }
 
