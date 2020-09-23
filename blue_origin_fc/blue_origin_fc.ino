@@ -8,28 +8,27 @@
 // Bonk Rewrite, September 20, 2020
 
 #include <SPI.h>
+#include <Wire.h>
 #include "SdFat.h"
 #include <BonkFramework.h>
 
 // pin configuration macros
 // TODO: going to need to update these defines
 // will depend on what the chip select will end up being
-#define CHIP_SELECT A0
-#define TEMP_ANALOG_PIN A1
-#define CURR_ANALOG_PIN A3
-#define VOLT_ANALOG_PIN A2
+// and what containment pins 
+#define CHIP_SELECT SS
 
-#define PUMP_POWER 2
-#define PUMP_1 5
-#define PUMP_2 6
+#define PUMP_POWER 0
+#define PUMP_1 1
+#define PUMP_2 2
 
-#define SOL_1 8
-#define SOL_2 9
-#define SOL_3 10
+#define SOL_1 3
+#define SOL_2 4
+#define SOL_3 5
 
-#define MOTOR 3
+#define MOTOR 6
 
-#define EXPERIMENT A5
+#define EXPERIMENT 7
 
 // TODO: change this for the actual sensor we're using
 #define TMP411_ADDRESS 0b1001101
@@ -55,12 +54,12 @@
 typedef struct env_data_st {
   float volt_data;
   float curr_data;
-  uint16_t temp_data;
+  uint16_t local_temp_data;
+  uint16_t remote_temp_data;
 } EnvData;
 
 // encapsulates state information
 typedef struct __attribute__((packed)) state_st {
-  char blue_state;
   bool primed;
   bool priming;
   bool pump_power;
@@ -106,21 +105,21 @@ class MiniEventHandler : public Bonk::EventHandler {
           // sorry Stu, cse 143 be damned
           return;
         }
-        // 
+        
         static unsigned long prime_start_time;
         if (!state.priming) {
           // start priming
           state.priming = true;
 
-          // TODO: start motor
           state.motor = true;
+          containmentPins.digitalWrite(MOTOR, LOW)
           prime_start_time = millis();
           sm.set_state(state);
         } else if (millis() - prime_start_time >= PRIME_TIME) {
           // stop priming
           state.priming = false;
-          // TODO: stop motor
           state.motor = false;
+          containmentPins.digitalWrite(MOTOR, HIGH);
           state.primed = true;
           sm.set_state(state);
         }
@@ -134,16 +133,14 @@ class MiniEventHandler : public Bonk::EventHandler {
         static unsigned long logging_time;
         if (!state.experiment) {
           state.experiment = true;
-          // TODO: start experiment          
-          // TODO: initialize data logging if necessary
-  
+          containmentPins.digitalWrite(EXPERIMENT, HIGH)
           logging_time = millis();
           sm.set_state(state);
         } else if (millis() - logging_time >= LOG_TIME_CUTOFF) {
           // take a measurement
           EnvData env_data;
           _read_sensors(env_data);
-          // TODO: log data
+          _log_data(env_data);
           logging_time = millis();
         }
       } else {
@@ -158,6 +155,7 @@ class MiniEventHandler : public Bonk::EventHandler {
     void onCoastEnd() const {
       if (state.experiment) {
         // TODO: stop the experiment
+        containmentPins.digitalWrite(EXPERIMENT, HIGH);
         state.experiment = false;
         sm.set_state(state);
       }
@@ -174,6 +172,7 @@ class MiniEventHandler : public Bonk::EventHandler {
           if (state.clean_step % 2 == 1 && millis() - cleaning_time >= STAGE_1_LENGTH) {
             if (state.clean_step == 5) {
               state.clean = true;
+              _stop_clean_1();
               sm.set_state(state);
               return;
             }
@@ -187,71 +186,6 @@ class MiniEventHandler : public Bonk::EventHandler {
         state.clean_step++;
         sm.set_state(state);
       }
-
-      // if (!check_lab_state(LS_CLEANED_M)) {
-      //   static unsigned long clean_time;
-      //   if (check_lab_state(LS_CLEANING_1_M)) {
-      //     // transition to 2
-      //     if (millis() - clean_time >= STAGE_1_LENGTH) {
-      //       state.lab_state &= ~LS_CLEANING_1_M;
-      //       state.lab_state |= LS_CLEANING_2_M;
-      //       stop_cleaning(1);
-      //       start_cleaning(2);
-      //       clean_time = millis();
-      //     }
-      //     // cleaning_step_1();
-      //   } else if (check_lab_state(LS_CLEANING_2_M)) {
-      //     // transition to 3
-      //     if (millis() - clean_time >= STAGE_2_LENGTH) {
-      //       state.lab_state &= ~LS_CLEANING_2_M;
-      //       state.lab_state |= LS_CLEANING_3_M;
-      //       stop_cleaning(2);
-      //       start_cleaning(1);
-      //       clean_time = millis();
-      //     }
-      //   } else if (check_lab_state(LS_CLEANING_3_M)) {
-      //     // transition to 4
-      //     if (millis() - clean_time >= STAGE_1_LENGTH) {
-      //       state.lab_state &= ~LS_CLEANING_3_M;
-      //       state.lab_state |= LS_CLEANING_4_M;
-      //       stop_cleaning(1);
-      //       start_cleaning(2);
-      //       clean_time = millis();
-      //     }
-      //   } else if (check_lab_state(LS_CLEANING_4_M)) {
-      //     // transition to 5
-      //     if (millis() - clean_time >= STAGE_2_LENGTH) {
-      //       state.lab_state &= ~LS_CLEANING_4_M;
-      //       state.lab_state |= LS_CLEANING_5_M;
-      //       stop_cleaning(2);
-      //       start_cleaning(1);
-      //       clean_time = millis();
-      //     }
-      //   } else if (check_lab_state(LS_CLEANING_5_M)) {
-      //     // end
-      //     if (millis() - clean_time >= STAGE_1_LENGTH) {
-      //       state.lab_state &= ~LS_CLEANING_5_M;
-      //       state.lab_state |= LS_CLEANED_M | LS_IDLING_M;
-      //       stop_cleaning(1);
-      //       record_state();
-
-      //       // clean up whole lab
-      //       log_msg(state.last_blue_time, "!cleaning");
-            
-      //       log_msg(state.last_blue_time, "clean->idle");
-  
-      //       // close streams
-      //       log_file.close();
-      //       SD.remove(STATE_FILE_PATH);
-      //     }
-      //   } else {
-      //     // we haven't done any cleaning yet
-      //     state.lab_state &= ~LS_IDLING_M;
-      //     state.lab_state |= LS_CLEANING_1_M;
-      //     start_cleaning(1);
-      //     clean_time = millis();
-      //   }
-      // }
     }
 
     void onTouchdown() const {
@@ -264,7 +198,12 @@ class MiniEventHandler : public Bonk::EventHandler {
     void _read_sensors(EnvData& env_data) const {
       env_data.curr_data = m226.readShuntCurrent();
       env_data.volt_data = m226.readShuntVoltage();
-      env_data.temp_data = thermometer.readLocalTemperature();
+      env_data.local_temp_data = thermometer.readLocalTemperature();
+      env_data.remote_temp_data = thermometer.readRemoteTemperature();
+    }
+
+    void _log_data(EnvData& env_data) const {
+      // TODO: implement this function
     }
 
     // determines if we can start priming. returns true if so, false otherwise
@@ -280,13 +219,11 @@ class MiniEventHandler : public Bonk::EventHandler {
       state.pump_power = true;
       state.pump_2 = true;
 
-      // TODO: turn on pumps/solenoids
-      // digitalWrite(SOL_2, LOW);
-      // digitalWrite(SOL_3, LOW);
+      containmentPins.digitalWrite(SOL_2, LOW);
+      containmentPins.digitalWrite(SOL_3, LOW);
                       
-      // // run p2
-      // digitalWrite(PUMP_POWER, LOW);
-      // digitalWrite(PUMP_2, HIGH);
+      containmentPins.digitalWrite(PUMP_POWER, LOW);
+      containmentPins.digitalWrite(PUMP_2, HIGH);
     }
 
     void _stop_clean_1() const {
@@ -296,13 +233,11 @@ class MiniEventHandler : public Bonk::EventHandler {
       state.pump_power = false;
       state.pump_2 = false;
 
-      // TODO: turn off pumps/solenoids
-      // digitalWrite(SOL_2, HIGH);
-      // digitalWrite(SOL_3, HIGH);
+      containmentPins.digitalWrite(SOL_2, HIGH);
+      containmentPins.digitalWrite(SOL_3, HIGH);
                       
-      // // run p2
-      // digitalWrite(PUMP_POWER, HIGH);
-      // digitalWrite(PUMP_2, LOW);
+      containmentPins.digitalWrite(PUMP_POWER, HIGH);
+      containmentPins.digitalWrite(PUMP_2, LOW);
     }
 
     void _start_clean_2() const {
@@ -312,13 +247,11 @@ class MiniEventHandler : public Bonk::EventHandler {
       state.pump_power = true;
       state.pump_1 = true;
 
-      // TODO: turn on pumps/solenoids
-      // digitalWrite(SOL_1, LOW);
-      // digitalWrite(SOL_3, LOW);
+      containmentPins.digitalWrite(SOL_1, LOW);
+      containmentPins.digitalWrite(SOL_3, LOW);
 
-      // // run p1
-      // digitalWrite(PUMP_POWER, LOW);
-      // digitalWrite(PUMP_1, HIGH);
+      containmentPins.digitalWrite(PUMP_POWER, LOW);
+      containmentPins.digitalWrite(PUMP_1, HIGH);
     }
 
     void _stop_clean_2() const {
@@ -328,13 +261,12 @@ class MiniEventHandler : public Bonk::EventHandler {
       state.pump_power = false;
       state.pump_1 = false;
 
-      // TODO: turn off pumps/solenoids
-      // digitalWrite(SOL_1, HIGH);
-      // digitalWrite(SOL_3, HIGH);
+      containmentPins.digitalWrite(SOL_1, HIGH);
+      containmentPins.digitalWrite(SOL_3, HIGH);
 
-      // // run p1
-      // digitalWrite(PUMP_POWER, HIGH);
-      // digitalWrite(PUMP_1, LOW);
+      // run p1
+      containmentPins.digitalWrite(PUMP_POWER, HIGH);
+      containmentPins.digitalWrite(PUMP_1, LOW);
     }
 };
 
@@ -345,25 +277,20 @@ MiniEventHandler eh;
 void pin_init() {
 
   // initialize pump pins
-  pinMode(PUMP_POWER, OUTPUT);
-  pinMode(PUMP_1, OUTPUT);
-  pinMode(PUMP_2, OUTPUT);
+  containmentPins.pinMode(PUMP_POWER, OUTPUT);
+  containmentPins.pinMode(PUMP_1, OUTPUT);
+  containmentPins.pinMode(PUMP_2, OUTPUT);
 
   // initialize experiment pin
-  pinMode(EXPERIMENT, OUTPUT);
+  containmentPins.pinMode(EXPERIMENT, OUTPUT);
 
   // initialize motor pin
-  pinMode(MOTOR, OUTPUT);
+  containmentPins.pinMode(MOTOR, OUTPUT);
 
   // initialize solenoid pins
-  pinMode(SOL_1, OUTPUT);
-  pinMode(SOL_2, OUTPUT);
-  pinMode(SOL_3, OUTPUT);
-
-  // pins for sensor reading
-  pinMode(TEMP_ANALOG_PIN, INPUT);
-  pinMode(CURR_ANALOG_PIN, INPUT);
-  pinMode(VOLT_ANALOG_PIN, INPUT);
+  containmentPins.pinMode(SOL_1, OUTPUT);
+  containmentPins.pinMode(SOL_2, OUTPUT);
+  containmentPins.pinMode(SOL_3, OUTPUT);
 
   // valves are active low
   // pumps are active high
@@ -371,31 +298,40 @@ void pin_init() {
   // motor active low
   // experiment is active low
   // TODO: active state of motor?
-  digitalWrite(PUMP_POWER, HIGH);
-  digitalWrite(PUMP_1, LOW);
-  digitalWrite(PUMP_2, LOW);
-  digitalWrite(SOL_1, HIGH);
-  digitalWrite(SOL_2, HIGH);
-  digitalWrite(SOL_3, HIGH);
-  digitalWrite(MOTOR, HIGH);
-  digitalWrite(EXPERIMENT, HIGH);
+  containmentPins.digitalWrite(PUMP_POWER, HIGH);
+  containmentPins.digitalWrite(PUMP_1, LOW);
+  containmentPins.digitalWrite(PUMP_2, LOW);
+  containmentPins.digitalWrite(SOL_1, HIGH);
+  containmentPins.digitalWrite(SOL_2, HIGH);
+  containmentPins.digitalWrite(SOL_3, HIGH);
+  containmentPins.digitalWrite(MOTOR, HIGH);
+  containmentPins.digitalWrite(EXPERIMENT, HIGH);
 }
 
 // configures and initializes serial, sd,
 // pump, solenoid, experiment interfaces
 void setup() {
-  // initialize Serial connection
-  Serial.begin(115200, SERIAL_8N1);
-  while (!Serial);
+  // initialize Wire for containment pins
+  Wire.begin();
+  Wire.setClock(400000);
 
-  state.blue_state = '@';
+  // initialize Serial connection with New Shepard
+  Serial.begin(115200, SERIAL_8N1);
+
+  // initialize SdFat
+  sd.begin(CHIP_SELECT);
+
   lm.begin("log.txt", "data.txt");
   sm.begin("state.txt", state);
+  // TDOD: update shunt resistor, current limit values
   m226.begin();
   thermometer.begin();
   containmentPins.begin();
   #ifdef BONK_BOOST
+  Bonk::enableBoostConverter(true);
   boost226.begin();
+  #else
+  Bonk::enableBoostConverter(false);
   #endif  // BONK_BOOST
   
   // configure pins
