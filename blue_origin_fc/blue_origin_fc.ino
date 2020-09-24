@@ -16,7 +16,7 @@
 // TODO: going to need to update these defines
 // will depend on what the chip select will end up being
 // and what containment pins 
-#define CHIP_SELECT SS
+#define CHIP_SELECT 4
 
 #define PUMP_POWER 0
 #define PUMP_1 1
@@ -80,7 +80,7 @@ typedef struct __attribute__((packed)) state_st {
 #define NOTIFY DEBUG
 #define WARNING DEBUG
 #define ERROR DEBUG
-#endif  // DEBUG
+#endif  // DEBUG_MODE
 
 // global variables
 
@@ -89,9 +89,7 @@ Bonk::LogManager lm;
 Bonk::Main226 m226;
 Bonk::Tmp411 thermometer(TMP411_ADDRESS);
 Bonk::Pca9557 containmentPins(BONK_CONTAINMENT9557_ADDRESS);
-#ifdef BONK_BOOST
 Bonk::Boost226 boost226;
-#endif  // BONK_BOOST;
 
 SdFat sd;   // SD File System
 
@@ -152,6 +150,7 @@ class MiniEventHandler : public Bonk::EventHandler {
           logging_time = millis();
         }
       } else {
+        // just do the priming procedure now in case we missed coast start
         onSeparationCommanded();
       }
     }
@@ -339,12 +338,8 @@ void setup() {
   m226.begin();
   thermometer.begin();
   containmentPins.begin();
-  #ifdef BONK_BOOST
   Bonk::enableBoostConverter(true);
   boost226.begin();
-  #else
-  Bonk::enableBoostConverter(false);
-  #endif  // BONK_BOOST
   
   // configure pins
   lm.log(Bonk::LogType::NOTIFY, "BONK initialized");
