@@ -61,7 +61,6 @@ typedef struct env_data_st {
 // encapsulates state information
 typedef struct __attribute__((packed)) state_st {
   bool primed;
-  bool priming;
   bool pump_power;
   bool pump_1;
   bool pump_2;
@@ -111,9 +110,8 @@ class MiniEventHandler : public Bonk::EventHandler {
         }
         
         static unsigned long prime_start_time;
-        if (!state.priming) {
+        if (!state.motor) {
           // start priming
-          state.priming = true;
           state.motor = true;
           containmentPins.digitalWrite(MOTOR, LOW)
           prime_start_time = millis();
@@ -121,7 +119,6 @@ class MiniEventHandler : public Bonk::EventHandler {
           lm.log(Bonk::LogType::NOTIFY, "priming");
         } else if (millis() - prime_start_time >= PRIME_TIME) {
           // stop priming
-          state.priming = false;
           state.motor = false;
           containmentPins.digitalWrite(MOTOR, HIGH);
           state.primed = true;
@@ -205,6 +202,8 @@ class MiniEventHandler : public Bonk::EventHandler {
     // poll sensors for current environmental data. Stores results
     // in EnvData struct env_data
     void _read_sensors(EnvData& env_data) const {
+      // TODO: we aren't using shunt current or shunt voltage to take
+      // experimental measurements, update these to the real thing
       env_data.curr_data = m226.readShuntCurrent();
       env_data.volt_data = m226.readShuntVoltage();
       env_data.local_temp_data = thermometer.readLocalTemperature();
