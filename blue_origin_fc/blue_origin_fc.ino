@@ -320,6 +320,11 @@ void setup() {
   // configure pins
   lm.log(Bonk::LogType::NOTIFY, "BONK initialized");
   pin_init();
+
+  LabState temp;
+  if (sm.get_state(&temp)) {
+    state = temp;
+  }
 }
 
 void loop() {
