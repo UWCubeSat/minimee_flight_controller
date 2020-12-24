@@ -58,15 +58,16 @@ enum fluid { H20, CuSO4 };
 // typedefs
 
 // encapsulates environment data
-typedef struct env_data_st {
+typedef struct data_st {
   float volt_data;
   float curr_data;
   uint16_t local_temp_data;
   uint16_t remote_temp_data;
-} EnvData;
+} Data;
 
 // encapsulates state information
 typedef struct __attribute__((packed)) state_st {
+  bool abort;
   bool primed;
   bool pump_powered;
   bool pump_1_on;
@@ -109,43 +110,16 @@ class MiniEventHandler : public Bonk::EventHandler {
     MiniEventHandler() : Bonk::EventHandler() {}
   protected:
     void onLiftoff() const {
-      if (!state.primed) {
+      if (!state.primed && !state.abort) {
         _fill_cell(CuSO4);
       }
     }
 
-    void onCoastStart() const {
-      // if primed, start experiment
-      // take a measurement (every .25 seconds)
-      if (state.primed) {
-        static unsigned long logging_time;
-        if (!state.experimenting) {
-          containmentPins.digitalWrite(EXPERIMENT, HIGH);
-          state.experimenting = true;
-          logging_time = millis();
-          sm.set_state(state);
-          lm.log(Bonk::LogType::NOTIFY, "plating");
-        } else if (millis() - logging_time >= LOG_TIME_CUTOFF) {
-          // take a measurement
-          EnvData env_data;
-          _read_sensors(env_data);
-          _log_data(env_data);
-          logging_time = millis();
-        }
-      }
-    }
-
-    void onApogee() const {
-      onCoastStart();
-    }
-
-    void onCoastEnd() const {
-      if (state.experimenting) {
-        containmentPins.digitalWrite(EXPERIMENT, HIGH);
-        state.experimenting = false;
-        sm.set_state(state);
-        lm.log(Bonk::LogType::NOTIFY, "finished plating");
-      } else if (!state.clean) {
+    void onEscapeCommanded() const {
+      if (!state.abort) {
+        state.abort = true;
+      } else if (state.primed) {
+        // need to rinse the cell
         if (state.rinses < RINSES) {
           if (state.cell_full) {
             _drain_cell((state.rinses == 0) ? CuSO4 : H20);
@@ -156,19 +130,65 @@ class MiniEventHandler : public Bonk::EventHandler {
       }
     }
 
+    void onCoastStart() const {
+      // if primed, start experiment
+      // take a measurement (every .25 seconds)
+      if (!state.abort) {
+        if (state.primed) {
+          static unsigned long logging_time;
+          if (!state.experimenting) {
+            containmentPins.digitalWrite(EXPERIMENT, HIGH);
+            state.experimenting = true;
+            logging_time = millis();
+            sm.set_state(state);
+            lm.log(Bonk::LogType::NOTIFY, "plating");
+          } else if (millis() - logging_time >= LOG_TIME_CUTOFF) {
+            // take a measurement
+            Data data;
+            _read_sensors(data);
+            _log_data(data);
+            logging_time = millis();
+          }
+        }
+      }
+    }
+
+    void onApogee() const {
+      onCoastStart();
+    }
+
+    void onCoastEnd() const {
+      if (!state.abort) {
+        if (state.experimenting) {
+          containmentPins.digitalWrite(EXPERIMENT, HIGH);
+          state.experimenting = false;
+          sm.set_state(state);
+          lm.log(Bonk::LogType::NOTIFY, "finished plating");
+        } else if (!state.clean) {
+          if (state.rinses < RINSES) {
+            if (state.cell_full) {
+              _drain_cell((state.rinses == 0) ? CuSO4 : H20);
+            } else {
+              _fill_cell(H20);
+            }
+          }
+        }
+      }
+    }
+
   private:
     // poll sensors for current environmental data. Stores results
     // in EnvData struct env_data
-    void _read_sensors(EnvData& env_data) const {
+    void _read_sensors(Data& data) const {
       // TODO: we aren't using shunt current or shunt voltage to take
       // experimental measurements, update these to the real thing
-      env_data.curr_data = m226.readShuntCurrent();
-      env_data.volt_data = m226.readShuntVoltage();
-      env_data.local_temp_data = thermometer.readLocalTemperature();
-      env_data.remote_temp_data = thermometer.readRemoteTemperature();
+      data.curr_data = m226.readShuntCurrent();
+      data.volt_data = m226.readShuntVoltage();
+      data.local_temp_data = thermometer.readLocalTemperature();
+      data.remote_temp_data = thermometer.readRemoteTemperature();
     }
 
-    void _log_data(EnvData& env_data) const {
+    void _log_data(Data& data) const {
       // TODO: implement this function
     }
     
@@ -329,4 +349,12 @@ void setup() {
 
 void loop() {
   eh.tick();
+
+  Bonk::ShipReading last = eh.getLastReading();
+
+  // abort conditions
+  if (last.chuteFaultWarning || last.event == EscapeCommanded) {
+    // enable some kind of abort flag
+    // 
+  }
 }
