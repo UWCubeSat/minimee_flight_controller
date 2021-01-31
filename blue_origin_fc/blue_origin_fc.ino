@@ -95,6 +95,7 @@ typedef struct __attribute__((packed)) state_st {
 Bonk::StateManager<LabState> sm;
 Bonk::LogManager lm;
 Bonk::Main226 m226;
+Bonk::Experiment226 experiment226;
 Bonk::Tmp411 thermometer(TMP411_ADDRESS);
 Bonk::Pca9557 containmentPins(BONK_CONTAINMENT9557_ADDRESS);
 Bonk::Boost226 boost226;
@@ -182,8 +183,8 @@ class MiniEventHandler : public Bonk::EventHandler {
     void _read_sensors(Data& data) const {
       // TODO: we aren't using shunt current or shunt voltage to take
       // experimental measurements, update these to the real thing
-      data.curr_data = m226.readShuntCurrent();
-      data.volt_data = m226.readShuntVoltage();
+      data.curr_data = experiment226.readShuntCurrent();
+      data.volt_data = experiment226.readShuntVoltage();
       data.local_temp_data = thermometer.readLocalTemperature();
       data.remote_temp_data = thermometer.readRemoteTemperature();
     }
@@ -337,12 +338,14 @@ void setup() {
   Bonk::enableBoostConverter(true);
   boost226.begin();
 
+  experiment226.begin(); 
+
   // configure pins
   lm.log(Bonk::LogType::NOTIFY, "BONK initialized");
   pin_init();
 
   LabState temp;
-  if (sm.get_state(&temp)) {
+  if (sm.get_state(temp)) {
     state = temp;
   }
 }
@@ -353,7 +356,7 @@ void loop() {
   Bonk::ShipReading last = eh.getLastReading();
 
   // abort conditions
-  if (last.chuteFaultWarning || last.event == EscapeCommanded) {
+  if (last.chuteFaultWarning || last.event == Bonk::FlightEvent::EscapeCommanded) {
     // enable some kind of abort flag
     // 
   }
