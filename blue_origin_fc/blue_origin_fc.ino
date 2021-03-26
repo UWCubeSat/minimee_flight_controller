@@ -104,6 +104,8 @@ SdFat sd;   // SD File System
 
 LabState state{ 0 };
 
+FatFile data_file;
+
 // class definitions
 
 class MiniEventHandler : public Bonk::EventHandler {
@@ -190,7 +192,7 @@ class MiniEventHandler : public Bonk::EventHandler {
     }
 
     void _log_data(Data& data) const {
-      // TODO: implement this function
+      
     }
     
     void _fill_cell(enum fluid fluidType) const {
@@ -329,7 +331,7 @@ void setup() {
   // initialize SdFat
   sd.begin(CHIP_SELECT);
 
-  lm.begin("log.txt", "data.txt");
+  lm.begin("log.txt");
   sm.begin("state.txt", state);
   // TDOD: update shunt resistor, current limit values
   m226.begin();
@@ -357,7 +359,6 @@ void loop() {
 
   // abort conditions
   if (last.chuteFaultWarning || last.event == Bonk::FlightEvent::EscapeCommanded) {
-    // enable some kind of abort flag
-    // 
+    state.abort = true;
   }
 }
