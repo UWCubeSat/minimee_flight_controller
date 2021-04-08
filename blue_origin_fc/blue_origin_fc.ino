@@ -59,10 +59,10 @@ enum fluid { H20, CuSO4 };
 
 // encapsulates environment data
 typedef struct data_st {
-  float volt_data;
-  float curr_data;
-  uint16_t local_temp_data;
-  uint16_t remote_temp_data;
+  float voltage;
+  float current;
+  uint16_t local_temperature;
+  uint16_t remote_temperature;
 } Data;
 
 // encapsulates state information
@@ -185,14 +185,18 @@ class MiniEventHandler : public Bonk::EventHandler {
     void _read_sensors(Data& data) const {
       // TODO: we aren't using shunt current or shunt voltage to take
       // experimental measurements, update these to the real thing
-      data.curr_data = experiment226.readShuntCurrent();
-      data.volt_data = experiment226.readShuntVoltage();
-      data.local_temp_data = thermometer.readLocalTemperature();
-      data.remote_temp_data = thermometer.readRemoteTemperature();
+      data.current = experiment226.readShuntCurrent();
+      data.voltage = experiment226.readShuntVoltage();
+      data.local_temperature = thermometer.readLocalTemperature();
+      data.remote_temperature = thermometer.readRemoteTemperature();
     }
 
     void _log_data(Data& data) const {
-      
+      data_file.printField(data.voltage, ',', 4);
+      data_file.printField(data.current, ',', 4);
+      data_file.printField(data.local_temperature, ',');
+      data_file.printField(data.remote_temperature, '\n');
+      data_file.flush();    // TODO: might take too much time, needs characterization
     }
     
     void _fill_cell(enum fluid fluidType) const {
