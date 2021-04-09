@@ -25,7 +25,6 @@
 #define SOL_1 3
 #define SOL_2 4
 #define SOL_3 5
-#define SOL_4 6
 
 #define FLUID_SENSOR_1 7
 #define FLUID_SENSOR_2 8
@@ -35,25 +34,30 @@
 // TODO: change this for the actual sensor we're using
 #define TMP411_ADDRESS 0b1001101
 
-// how long (in ms) it takes to prime the experiment
-#define PRIME_TIME 3000
-
-// how long (in ms) to wait before priming
-#define PRIME_WAIT_TIME 1000
-
-// how long (in ms) it takes to finish stage 1
-#define STAGE_1_LENGTH 1000
-
-// how long (in ms) it takes to finish stage 2
-#define STAGE_2_LENGTH 1000
-
 // how long to wait before taking a measurement (ms)
 #define LOG_TIME_CUTOFF 250
+
+// how long to wait before checking fluid sensor
+#define DRAIN_TIME_CUTOFF 250
 
 // how many times do we clean
 #define RINSES 2
 
-enum fluid { H20, CuSO4 };
+enum action {
+  IDLE,
+  START_SULF,
+  START_WATER,
+  STOP_SULF,
+  STOP_WATER,
+  CHECK_FULL,
+  START_DRAIN,
+  CHECK_DRAIN,
+  STOP_DRAIN,
+  DRAIN_WAIT,
+  START_EXP,
+  COLLECT_DATA,
+  STOP_EXP,
+};
 
 // typedefs
 
@@ -75,11 +79,12 @@ typedef struct __attribute__((packed)) state_st {
   bool solenoid_1_open;
   bool solenoid_2_open;
   bool solenoid_3_open;
-  bool solenoid_4_open;
   bool cell_full;
   bool experimenting;
   bool clean;
   uint8_t rinses;
+  enum action current_action;
+  enum action last_action;
 } LabState;
 
 // end typedefs
@@ -106,183 +111,7 @@ LabState state{ 0 };
 
 FatFile data_file;
 
-// class definitions
-
-class MiniEventHandler : public Bonk::EventHandler {
-  public:
-    MiniEventHandler() : Bonk::EventHandler() {}
-  protected:
-    void onLiftoff() const {
-      if (!state.primed && !state.abort) {
-        _fill_cell(CuSO4);
-      }
-    }
-
-    void onEscapeCommanded() const {
-      if (!state.abort) {
-        state.abort = true;
-      } else if (state.primed) {
-        // need to rinse the cell
-        if (state.rinses < RINSES) {
-          if (state.cell_full) {
-            _drain_cell((state.rinses == 0) ? CuSO4 : H20);
-          } else {
-            _fill_cell(H20);
-          }
-        }
-      }
-    }
-
-    void onCoastStart() const {
-      // if primed, start experiment
-      // take a measurement (every .25 seconds)
-      if (!state.abort) {
-        if (state.primed) {
-          static unsigned long logging_time;
-          if (!state.experimenting) {
-            containmentPins.digitalWrite(EXPERIMENT, HIGH);
-            state.experimenting = true;
-            logging_time = millis();
-            sm.set_state(state);
-            lm.log(Bonk::LogType::NOTIFY, "plating");
-          } else if (millis() - logging_time >= LOG_TIME_CUTOFF) {
-            // take a measurement
-            Data data;
-            _read_sensors(data);
-            _log_data(data);
-            logging_time = millis();
-          }
-        }
-      }
-    }
-
-    void onApogee() const {
-      onCoastStart();
-    }
-
-    void onCoastEnd() const {
-      if (!state.abort) {
-        if (state.experimenting) {
-          containmentPins.digitalWrite(EXPERIMENT, HIGH);
-          state.experimenting = false;
-          sm.set_state(state);
-          lm.log(Bonk::LogType::NOTIFY, "finished plating");
-        } else if (!state.clean) {
-          if (state.rinses < RINSES) {
-            if (state.cell_full) {
-              _drain_cell((state.rinses == 0) ? CuSO4 : H20);
-            } else {
-              _fill_cell(H20);
-            }
-          }
-        }
-      }
-    }
-
-  private:
-    // poll sensors for current environmental data. Stores results
-    // in EnvData struct env_data
-    void _read_sensors(Data& data) const {
-      // TODO: we aren't using shunt current or shunt voltage to take
-      // experimental measurements, update these to the real thing
-      data.current = experiment226.readShuntCurrent();
-      data.voltage = experiment226.readShuntVoltage();
-      data.local_temperature = thermometer.readLocalTemperature();
-      data.remote_temperature = thermometer.readRemoteTemperature();
-    }
-
-    void _log_data(Data& data) const {
-      data_file.printField(data.voltage, ',', 4);
-      data_file.printField(data.current, ',', 4);
-      data_file.printField(data.local_temperature, ',');
-      data_file.printField(data.remote_temperature, '\n');
-      data_file.flush();    // TODO: might take too much time, needs characterization
-    }
-    
-    void _fill_cell(enum fluid fluidType) const {
-      uint8_t solenoid_pin;
-      bool *solenoid_state_ptr;
-
-      if (fluidType == H20) {
-        solenoid_pin = SOL_2;
-        solenoid_state_ptr = &state.solenoid_2_open;
-      } else if (fluidType == CuSO4) {
-        solenoid_pin = SOL_1;
-        solenoid_state_ptr = &state.solenoid_1_open;
-      } else {
-        lm.log(Bonk::LogType::ERROR, "that's no solenoid!");
-        return;
-      }
-
-      if (!(*solenoid_state_ptr)) {
-        containmentPins.digitalWrite(solenoid_pin, LOW);
-        *solenoid_state_ptr = true;
-        sm.set_state(state);
-        lm.log(Bonk::LogType::NOTIFY, (solenoid_pin == SOL_1) ? "valve 1 open" : "valve 2 open");
-      } else if (!state.pump_1_on) {
-        containmentPins.digitalWrite(PUMP_POWER, LOW);
-        containmentPins.digitalWrite(PUMP_1, HIGH);
-        state.pump_1_on = true;
-        state.pump_powered = true;
-        sm.set_state(state);
-        lm.log(Bonk::LogType::NOTIFY, "pump 1 on");
-      } else if (!containmentPins.digitalRead(FLUID_SENSOR_1)) {
-        containmentPins.digitalWrite(PUMP_POWER, HIGH);
-        containmentPins.digitalWrite(PUMP_1, LOW);
-        containmentPins.digitalWrite(solenoid_pin, HIGH);
-        state.pump_powered = false;
-        state.pump_1_on = false;
-        *solenoid_state_ptr = false;
-        state.cell_full = true;
-        state.primed = true;
-        sm.set_state(state);
-        lm.log(Bonk::LogType::NOTIFY, "filled");
-      }
-    }
-
-    void _drain_cell(enum fluid fluidType) const {
-      uint8_t solenoid_pin;
-      bool *solenoid_state_ptr;
-
-      if (fluidType == H20) {
-        solenoid_pin = SOL_3;
-        solenoid_state_ptr = &state.solenoid_3_open;
-      } else if (fluidType == CuSO4) {
-        solenoid_pin = SOL_4;
-        solenoid_state_ptr = &state.solenoid_4_open;
-      } else {
-        lm.log(Bonk::LogType::ERROR, "that's no solenoid!");
-        return;
-      }
-
-      if (!(*solenoid_state_ptr)) {
-        containmentPins.digitalWrite(solenoid_pin, LOW);
-        *solenoid_state_ptr = true;
-        sm.set_state(state);
-        lm.log(Bonk::LogType::NOTIFY, (solenoid_pin == SOL_3) ? "valve 3 open" : "valve 4 open");
-      } else if (!state.pump_2_on) {
-        containmentPins.digitalWrite(PUMP_POWER, LOW);
-        containmentPins.digitalWrite(PUMP_2, HIGH);
-        state.pump_2_on = true;
-        state.pump_powered = true;
-        sm.set_state(state);
-        lm.log(Bonk::LogType::NOTIFY, "pump 2 on");
-      } else if (!containmentPins.digitalRead(FLUID_SENSOR_2)) {
-        containmentPins.digitalWrite(PUMP_POWER, HIGH);
-        containmentPins.digitalWrite(PUMP_2, LOW);
-        containmentPins.digitalWrite(solenoid_pin, HIGH);
-        state.pump_powered = false;
-        state.pump_1_on = false;
-        *solenoid_state_ptr = false;
-        state.cell_full = false;
-        state.primed = false;
-        sm.set_state(state);
-        lm.log(Bonk::LogType::NOTIFY, "drained");
-      }
-    }
-};
-
-MiniEventHandler eh;
+Bonk::EventHandler eh;
 // end global variables
 
 // initialize pin
@@ -300,7 +129,6 @@ void pin_init() {
   containmentPins.pinMode(SOL_1, OUTPUT);
   containmentPins.pinMode(SOL_2, OUTPUT);
   containmentPins.pinMode(SOL_3, OUTPUT);
-  containmentPins.pinMode(SOL_4, OUTPUT);
 
   // initialize fluid sensor pins
   containmentPins.pinMode(FLUID_SENSOR_1, INPUT);
@@ -316,7 +144,6 @@ void pin_init() {
   containmentPins.digitalWrite(SOL_1, HIGH);
   containmentPins.digitalWrite(SOL_2, HIGH);
   containmentPins.digitalWrite(SOL_3, HIGH);
-  containmentPins.digitalWrite(SOL_4, HIGH);
   containmentPins.digitalWrite(EXPERIMENT, HIGH);
 
   lm.log(Bonk::LogType::NOTIFY, "pins initialized");
@@ -354,15 +181,357 @@ void setup() {
   if (sm.get_state(temp)) {
     state = temp;
   }
+
+  // TODO: add extra logic for restoring state/turning on hardware
+}
+
+void start_sulf() {
+  if (!state.solenoid_1_open) {
+    // open the CuSO4 valve
+    containmentPins.digitalWrite(SOL_1, LOW);
+
+    // update our state
+    state.solenoid_1_open = true;
+    sm.set_state(state);
+
+    // log that we opened the solenoid
+    lm.log(Bonk::LogType::NOTIFY, "sulfur fill valve open");
+  } else if (!state.pump_1_on) {
+    // turn on the fill pump
+    containmentPins.digitalWrite(PUMP_POWER, LOW);
+    containmentPins.digitalWrite(PUMP_1, HIGH);
+
+    // update our state
+    state.pump_1_on = true;
+    state.pump_powered = true;
+    sm.set_state(state);
+
+    // log that we turned on the fill pump
+    lm.log(Bonk::LogType::NOTIFY, "fill pump on");
+  }
+}
+
+void stop_sulf() {
+  if (!state.pump_1_on) {
+    // turn off the fill pump
+    containmentPins.digitalWrite(PUMP_POWER, HIGH);
+    containmentPins.digitalWrite(PUMP_1, LOW);
+
+    // update our state
+    state.pump_1_on = false;
+    state.pump_powered = false;
+    sm.set_state(state);
+
+    // log that we turned off the fill pump
+    lm.log(Bonk::LogType::NOTIFY, "fill pump off");
+  } else if (!state.solenoid_1_open) {
+    // close the CuSO4 valve
+    containmentPins.digitalWrite(SOL_1, HIGH);
+
+    // update our state
+    state.solenoid_1_open = false;
+    sm.set_state(state);
+
+    // log that we closed the solenoid
+    lm.log(Bonk::LogType::NOTIFY, "sulfur fill valve closed");
+  }
+}
+
+bool check_full() {
+  return containmentPins.digitalRead(FLUID_SENSOR_1) == HIGH;
+}
+
+bool check_drain() {
+  return containmentPins.digitalRead(FLUID_SENSOR_2) == LOW;
+}
+
+void start_water() {
+  if (!state.solenoid_2_open) {
+    // open the CuSO4 valve
+    containmentPins.digitalWrite(SOL_2, LOW);
+
+    // update our state
+    state.solenoid_2_open = true;
+    sm.set_state(state);
+
+    // log that we opened the solenoid
+    lm.log(Bonk::LogType::NOTIFY, "sulfur fill valve open");
+  } else if (!state.pump_1_on) {
+    // turn on the fill pump
+    containmentPins.digitalWrite(PUMP_POWER, LOW);
+    containmentPins.digitalWrite(PUMP_1, HIGH);
+
+    // update our state
+    state.pump_1_on = true;
+    state.pump_powered = true;
+    sm.set_state(state);
+
+    // log that we turned on the fill pump
+    lm.log(Bonk::LogType::NOTIFY, "fill pump on");
+  }
+}
+
+void stop_water() {
+  if (!state.pump_1_on) {
+    // turn off the fill pump
+    containmentPins.digitalWrite(PUMP_POWER, HIGH);
+    containmentPins.digitalWrite(PUMP_1, LOW);
+
+    // update our state
+    state.pump_1_on = false;
+    state.pump_powered = false;
+    sm.set_state(state);
+
+    // log that we turned off the fill pump
+    lm.log(Bonk::LogType::NOTIFY, "fill pump off");
+  } else if (!state.solenoid_2_open) {
+    // close the water valve
+    containmentPins.digitalWrite(SOL_2, HIGH);
+
+    // update our state
+    state.solenoid_2_open = false;
+    sm.set_state(state);
+
+    // log that we closed the solenoid
+    lm.log(Bonk::LogType::NOTIFY, "water fill valve closed");
+  }
+}
+
+void start_exp() {
+  if (!state.experimenting) {
+    // turn on the experiment
+    containmentPins.digitalWrite(EXPERIMENT, LOW);
+
+    // update our state
+    state.experimenting = true;
+    sm.set_state(state);
+
+    // log that we started the experiment
+    lm.log(Bonk::LogType::NOTIFY, "experiment started");
+  }
+}
+
+void stop_exp() {
+  if (!state.experimenting) {
+    // turn off the experiment
+    containmentPins.digitalWrite(EXPERIMENT, HIGH);
+
+    // update our state
+    state.experimenting = false;
+    sm.set_state(state);
+
+    // log that we started the experiment
+    lm.log(Bonk::LogType::NOTIFY, "experiment stopped");
+  }
+}
+
+void collect_data() {
+  static unsigned long last_log_time = millis();
+  if (millis() - last_log_time >= LOG_TIME_CUTOFF) {
+    float current = experiment226.readShuntCurrent();
+    float voltage = experiment226.readShuntVoltage();
+    uint16_t local_temperature = thermometer.readLocalTemperature();
+    uint16_t remote_temperature = thermometer.readRemoteTemperature();
+    data_file.printField(voltage, ',', 4);
+    data_file.printField(current, ',', 4);
+    data_file.printField(local_temperature, ',');
+    data_file.printField(remote_temperature, '\n');
+    data_file.flush();    // TODO: might take too much time, needs characterization
+    last_log_time = millis();
+  }
+}
+
+void start_drain() {
+  if (!state.solenoid_1_open) {
+    // open the drain valve
+    containmentPins.digitalWrite(SOL_3, LOW);
+
+    // update our state
+    state.solenoid_3_open = true;
+    sm.set_state(state);
+
+    // log that we opened the solenoid
+    lm.log(Bonk::LogType::NOTIFY, "drain valve open");
+  } else if (!state.pump_2_on) {
+    // turn on the fill pump
+    containmentPins.digitalWrite(PUMP_POWER, LOW);
+    containmentPins.digitalWrite(PUMP_2, HIGH);
+
+    // update our state
+    state.pump_2_on = true;
+    state.pump_powered = true;
+    sm.set_state(state);
+
+    // log that we turned on the drain pump
+    lm.log(Bonk::LogType::NOTIFY, "drain pump on");
+  }
+}
+
+void stop_drain() {
+  if (!state.pump_2_on) {
+    // turn off the drain pump
+    containmentPins.digitalWrite(PUMP_POWER, HIGH);
+    containmentPins.digitalWrite(PUMP_2, LOW);
+
+    // update our state
+    state.pump_2_on = false;
+    state.pump_powered = false;
+    sm.set_state(state);
+
+    // log that we turned off the drain pump
+    lm.log(Bonk::LogType::NOTIFY, "drain pump off");
+  } else if (!state.solenoid_2_open) {
+    // close the drain valve
+    containmentPins.digitalWrite(SOL_3, HIGH);
+
+    // update our state
+    state.solenoid_2_open = false;
+    sm.set_state(state);
+
+    // log that we closed the solenoid
+    lm.log(Bonk::LogType::NOTIFY, "drain valve closed");
+  }
 }
 
 void loop() {
+  // tick BONK
   eh.tick();
 
-  Bonk::ShipReading last = eh.getLastReading();
+  // get the most recent New Shepard flight event
+  Bonk::ShipReading last_reading = eh.getLastReading();
+  
+  // FSM for controller
+  switch (state.current_action) {
+    case action::IDLE:
+      if (last_reading.event == Bonk::FlightEvent::Liftoff) {
+        state.current_action = action::START_SULF;
+      } else if (last_reading.event == Bonk::FlightEvent::CoastStart) {
+        state.current_action = action::START_EXP;
+      } else {
+        state.current_action = action::IDLE;
+      }
+      break;
 
-  // abort conditions
-  if (last.chuteFaultWarning || last.event == Bonk::FlightEvent::EscapeCommanded) {
-    state.abort = true;
+    case action::START_SULF:
+      start_sulf();
+      if (state.pump_1_on) {
+        state.current_action = action::CHECK_FULL;
+      } else {
+        state.current_action = action::START_SULF;
+      }
+      break;
+
+    case action::STOP_SULF:
+      stop_sulf();
+      if (!state.pump_1_on) {
+        state.current_action = action::IDLE;
+      } else {
+        state.current_action = action::STOP_SULF;
+      }
+      break;
+
+    case action::CHECK_FULL:
+      if (check_full()) {
+        if (state.last_action == action::START_SULF) {
+          state.current_action = action::STOP_SULF;
+        } else if (state.last_action == action::START_WATER) {
+          state.current_action = action::STOP_WATER;
+        }
+      } else {
+        state.current_action = action::CHECK_FULL;
+      }
+      break;
+      
+    case action::START_EXP:
+      start_exp();
+      if (state.experimenting) {
+        state.current_action = action::COLLECT_DATA;
+      } else {
+        state.current_action = action::START_EXP;
+      }
+      break;
+
+    case action::COLLECT_DATA:
+      collect_data();
+      if (last_reading.event == Bonk::FlightEvent::CoastEnd) {
+        state.current_action = action::STOP_EXP;
+      } else {
+        state.current_action = action::COLLECT_DATA;
+      }
+      break;
+
+    case action::STOP_EXP:
+      stop_exp();
+      if (!state.experimenting) {
+        state.current_action = action::START_DRAIN;
+      } else {
+        state.current_action = action::STOP_EXP;
+      }
+      break;
+
+    case action::START_DRAIN:
+      start_drain();
+      if (state.pump_2_on) {
+        state.current_action = action::DRAIN_WAIT;
+      } else {
+        state.current_action = action::START_DRAIN;
+      }
+      break;
+
+    case action::DRAIN_WAIT:
+      static unsigned long drain_time;
+      if (state.last_action == action::START_DRAIN) {
+        drain_time = millis();
+      }
+
+      if (millis() - drain_time >= DRAIN_TIME_CUTOFF) {
+        state.current_action = action::CHECK_DRAIN;
+      } else {
+        state.current_action = action::DRAIN_WAIT;
+      }
+      break;
+
+    case action::CHECK_DRAIN:
+      if (check_drain()) {
+        state.current_action = action::STOP_DRAIN;
+      } else {
+        state.current_action = action::CHECK_DRAIN;
+      }
+      break;
+
+    case action::STOP_DRAIN:
+      stop_drain();
+      if (!state.pump_2_on) {
+        if (state.rinses == RINSES) {
+          state.current_action = action::IDLE;
+        } else {
+          state.current_action = action::START_WATER;
+        }
+      } else {
+        state.current_action = action::STOP_DRAIN;
+      }
+      break;
+
+    case action::START_WATER:
+      start_water();
+      if (state.pump_1_on) {
+        state.current_action = action::CHECK_FULL;
+      } else {
+        state.current_action = action::START_WATER;
+      }
+      break;
+
+    case action::STOP_WATER:
+      stop_water();
+      if (!state.pump_1_on) {
+        state.current_action = action::START_DRAIN;
+      } else {
+        state.current_action = action::STOP_WATER;
+      }
+      break;
   }
+  if (state.last_action != state.current_action) {
+    sm.set_state(state);
+  }
+  state.last_action = state.current_action;
 }
