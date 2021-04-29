@@ -312,7 +312,7 @@ void start_exp() {
 }
 
 void stop_exp() {
-  if (!state.experimenting) {
+  if (state.experimenting) {
     // turn off the experiment
     containmentPins.digitalWrite(EXPERIMENT, HIGH);
 
@@ -393,19 +393,13 @@ void stop_drain() {
   }
 }
 
-void loop() {
-  // tick BONK
-  eh.tick();
-
-  // get the most recent New Shepard flight event
-  Bonk::ShipReading last_reading = eh.getLastReading();
-  
-  // FSM for controller
+void tick_fsm(Bonk::FlightEvent fe) {
+  // FSM Transitions
   switch (state.current_action) {
     case action::IDLE:
-      if (last_reading.event == Bonk::FlightEvent::Liftoff) {
+      if (fe == Bonk::FlightEvent::Liftoff) {
         state.current_action = action::START_SULF;
-      } else if (last_reading.event == Bonk::FlightEvent::CoastStart) {
+      } else if (fe == Bonk::FlightEvent::CoastStart) {
         state.current_action = action::START_EXP;
       } else {
         state.current_action = action::IDLE;
@@ -413,7 +407,6 @@ void loop() {
       break;
 
     case action::START_SULF:
-      start_sulf();
       if (state.pump_1_on) {
         state.current_action = action::CHECK_FULL;
       } else {
@@ -422,7 +415,6 @@ void loop() {
       break;
 
     case action::STOP_SULF:
-      stop_sulf();
       if (!state.pump_1_on) {
         state.current_action = action::IDLE;
       } else {
@@ -443,7 +435,6 @@ void loop() {
       break;
       
     case action::START_EXP:
-      start_exp();
       if (state.experimenting) {
         state.current_action = action::COLLECT_DATA;
       } else {
@@ -452,8 +443,7 @@ void loop() {
       break;
 
     case action::COLLECT_DATA:
-      collect_data();
-      if (last_reading.event == Bonk::FlightEvent::CoastEnd) {
+      if (fe == Bonk::FlightEvent::CoastEnd) {
         state.current_action = action::STOP_EXP;
       } else {
         state.current_action = action::COLLECT_DATA;
@@ -461,7 +451,6 @@ void loop() {
       break;
 
     case action::STOP_EXP:
-      stop_exp();
       if (!state.experimenting) {
         state.current_action = action::START_DRAIN;
       } else {
@@ -470,7 +459,6 @@ void loop() {
       break;
 
     case action::START_DRAIN:
-      start_drain();
       if (state.pump_2_on) {
         state.current_action = action::DRAIN_WAIT;
       } else {
@@ -500,7 +488,6 @@ void loop() {
       break;
 
     case action::STOP_DRAIN:
-      stop_drain();
       if (!state.pump_2_on) {
         if (state.rinses == RINSES) {
           state.current_action = action::IDLE;
@@ -513,7 +500,6 @@ void loop() {
       break;
 
     case action::START_WATER:
-      start_water();
       if (state.pump_1_on) {
         state.current_action = action::CHECK_FULL;
       } else {
@@ -522,7 +508,6 @@ void loop() {
       break;
 
     case action::STOP_WATER:
-      stop_water();
       if (!state.pump_1_on) {
         state.current_action = action::START_DRAIN;
       } else {
@@ -530,8 +515,58 @@ void loop() {
       }
       break;
   }
+
+  // FSM Actions
+  switch (state.current_action) {
+    case action::START_SULF:
+      start_sulf();
+      break;
+
+    case action::STOP_SULF:
+      stop_sulf();
+      break;
+
+    case action::START_EXP:
+      start_exp();
+      break;
+
+    case action::COLLECT_DATA:
+      collect_data();
+      break;
+
+    case action::STOP_EXP:
+      stop_exp();
+      break;
+
+    case action::START_DRAIN:
+      start_drain();
+      break;
+
+    case action::STOP_DRAIN:
+      stop_drain();
+      break;
+
+    case action::START_WATER:
+      start_water();
+      break;
+
+    case action::STOP_WATER:
+      stop_water();
+      break;
+  }
+  
   if (state.last_action != state.current_action) {
     sm.set_state(state);
   }
   state.last_action = state.current_action;
+}
+
+void loop() {
+  // tick BONK
+  eh.tick();
+
+  // get the most recent New Shepard flight event
+  Bonk::ShipReading last_reading = eh.getLastReading();
+  
+ 
 }
