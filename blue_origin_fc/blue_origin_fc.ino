@@ -567,6 +567,7 @@ void loop() {
 
   // get the most recent New Shepard flight event
   Bonk::ShipReading last_reading = eh.getLastReading();
-  
- 
+
+  // tick the controller FSM
+  tick_fsm(last_reading.event);
 }
