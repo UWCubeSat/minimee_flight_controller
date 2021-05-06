@@ -29,6 +29,7 @@
 #define FLUID_SENSOR_1 7
 #define FLUID_SENSOR_2 8
 
+// two experiments, but triggered by the same pin
 #define EXPERIMENT 9
 
 // TODO: change this for the actual sensor we're using
@@ -100,7 +101,8 @@ typedef struct __attribute__((packed)) state_st {
 Bonk::StateManager<LabState> sm;
 Bonk::LogManager lm;
 Bonk::Main226 m226;
-Bonk::Experiment226 experiment226;
+Bonk::Experiment226 chip1;
+Bonk::Experiment226 chip2;
 Bonk::Tmp411 thermometer(TMP411_ADDRESS);
 Bonk::Pca9557 containmentPins(BONK_CONTAINMENT9557_ADDRESS);
 Bonk::Boost226 boost226;
