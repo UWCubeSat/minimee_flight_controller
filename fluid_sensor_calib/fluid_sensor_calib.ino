@@ -34,16 +34,6 @@ void setup() {
   containmentPins.pinMode(FLUID_SENSOR_1_OFF, INPUT);
   containmentPins.pinMode(FLUID_SENSOR_2_ON, INPUT);
   containmentPins.pinMode(FLUID_SENSOR_2_OFF, INPUT);
-  
-  // us Vdd as Vref (ignore Vref pin)
-  buf[0] = WRITE_ALL_MEM;
-  Wire.beginTransmission(MCP4726_I2C_ADDR_1);
-  Wire.write(buf, sizeof(buf) / sizeof(uint8_t));
-  Wire.endTransmission();
-
-  Wire.beginTransmission(MCP4726_I2C_ADDR_2);
-  Wire.write(buf, sizeof(buf) / sizeof(uint8_t));
-  Wire.endTransmission();
 }
 
 bool check_full() {
@@ -67,7 +57,6 @@ void loop() {
     Serial.println(n);
     char* out;
     setpoint_1 = strtol(read_buf, &out, 10);
-    Serial.read();  // discard the space
     n = Serial.readBytesUntil('\n', read_buf, 5);
     Serial.println(n);
     setpoint_2 = strtol(read_buf, &out, 10);
@@ -76,19 +65,21 @@ void loop() {
     Serial.println(setpoint_2);
 
     buf[0] = WRITE_ALL_MEM;
-    buf[1] = (uint8_t)((setpoint_1 >> 8) & 0x0f);
-    buf[2] = (uint8_t)(setpoint_1);
+    buf[1] = (uint8_t)(setpoint_1 >> 4);
+    buf[2] = (uint8_t)((setpoint_1 & 0x0F) << 4);
     
     Wire.beginTransmission(MCP4726_I2C_ADDR_1);
     Wire.write(buf, sizeof(buf) / sizeof(uint8_t));
     Wire.endTransmission();
 
-    buf[1] = (uint8_t)((setpoint_2 >> 8) & 0x0f);
-    buf[2] = (uint8_t)(setpoint_2);
+    buf[1] = (uint8_t)(setpoint_2 >> 4);
+    buf[2] = (uint8_t)((setpoint_2 & 0x0F) << 4);
 
     Wire.beginTransmission(MCP4726_I2C_ADDR_2);
     Wire.write(buf, sizeof(buf) / sizeof(uint8_t));
     Wire.endTransmission();
+
+    delay(10);
 
     bool def_on = containmentPins.digitalRead(FLUID_SENSOR_1_ON) == HIGH;
     bool def_off = containmentPins.digitalRead(FLUID_SENSOR_1_OFF) == HIGH;
